@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BaristaVoice</title>
+    <link rel="stylesheet" href="stylesheet.css">
+</head>
+
+<body>
+
+    <div class="speech-order">
+
+        <h2>Press to record order</h2>
+        <button id="order-btn">
+            Click to Start
+        </button>
+
+    </div>
+
+    <div class="dashboard-columns">
+
+        <div class="panel-column">
+
+            <h2>Order Transcript:</h2>
+            <p id="transcript">Waiting for your order...</p>
+
+            <h2>Active Kitchen Tickets:</h2>
+            <div id="order-queue"></div>
+
+        </div>
+
+        <div class="panel-column">
+
+            <h2>Current Stock Levels:</h2>
+            <div id="stock-levels">
+
+                <div class="progress-container">
+                    <div id="beans-stock">
+                        1000g of coffee beans remaining
+                    </div>
+                    
+                    <div id="bar-beans" class="progress-fill beans-progress" style="width: 100%;"></div>
+                </div>
+
+                <div class="progress-container">
+                    <div id="milk-stock">
+                        2000ml of whole milk remaining
+                    </div>
+
+                    <div id="bar-milk" class="progress-fill milk-progress" style="width: 100%;"></div>
+                </div>
+
+                <div class="progress-container">
+                    <div id="oat-milk-stock">
+                        2000ml of oat milk remaining
+                    </div>
+                    
+                    <div id="bar-oat-milk" class="progress-fill oat-milk-progress" style="width: 100%;"></div>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <script src="coffee.js"></script>
+</body>
+
+</html>

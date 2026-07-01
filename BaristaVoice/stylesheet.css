@@ -1,0 +1,155 @@
+body {
+    background-color: #0b1329;
+    color: #f8fafc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 40px 20px;
+    margin: 0;
+}
+
+.speech-order {
+    max-width: 600px;
+    margin: 0 auto;
+    background-color: #1c2541;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    border: 1px solid #3a506b;
+}
+
+h2 {
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #94a3b8;
+    margin-top: 24px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #3a506b;
+    padding-bottom: 4px;
+}
+
+#order-btn {
+    width: 100%;
+    background-color: #3b82f6;
+    color: white;
+    font-weight: 600;
+    padding: 14px;
+    font-size: 1rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+#order-btn:hover { background-color: #2563eb; }
+#order-btn:active { transform: scale(0.98); }
+
+#transcript {
+    background-color: #0b1329;
+    padding: 12px;
+    border-radius: 6px;
+    font-style: italic;
+    color: #34d399;
+    border-left: 3px solid #10b981;
+    margin-top: 4px;
+}
+
+.dashboard-columns {
+    display: flex;
+    gap: 20px;
+    margin-top: 24px;
+    align-items: flex-start;
+}
+
+.panel-column {
+    flex: 1;          
+    min-width: 0;       
+}
+
+.panel-column h2 {
+    margin-top: 0 !important; 
+}
+
+.progress-container {
+    width: 100%;
+    color: #34d399;
+    border-radius: 4px;
+    overflow: hidden; 
+    height: 40px;
+    margin-bottom: 12px;
+}
+
+.progress-fill {
+    height: 10%;
+    border-radius: 4px;
+    transition: width 0.4s ease-out, background-color 0.3s ease;
+}
+
+.beans-progress {
+    background-color: #8b5e3c; 
+}
+
+.milk-progress {
+    background-color: #ffffff; 
+}
+
+.oat-milk-progress {
+    background-color: #f5e5c3; 
+}
+
+#order-queue {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.ticketCard {
+    background-color: #0b1329;
+    color: #ffffff;
+    padding: 14px;
+    border-radius: 8px;
+    border: 1px solid #3a506b;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-transform: capitalize;
+    font-weight: bold;
+    animation: slideIn 0.2s ease-out;
+}
+
+.ticketCard button {
+    background-color: #10b981;
+    color: white;
+    border: none;
+    font-weight: bold;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: background-color 0.2s;
+}
+
+.ticketCard button:hover { background-color: #059669; }
+
+#stock-levels {
+    background-color: #0b1329;
+    padding: 16px;
+    border-radius: 8px;
+    border: 1px solid #3a506b;
+    font-family: monospace;
+    font-size: 0.9rem;
+}
+
+#stock-levels div {
+    padding: 8px 0;
+    border-bottom: 1px dashed #1e293b;
+}
+
+#stock-levels div:last-child {
+    border-bottom: none;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+}

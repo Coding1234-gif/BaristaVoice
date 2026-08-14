@@ -1,0 +1,173 @@
+import '../../models/menu.dart';
+
+/// Demo menu used until a café owner uploads and activates their own
+/// (see Phase 3: menu ingestion). Deliberately small and realistic for a
+/// single independent coffee shop.
+final seedMenu = CafeMenu(
+  cafeName: 'Corner Coffee Co.',
+  items: [
+    MenuItem(
+      id: 'latte',
+      name: 'Latte',
+      description: 'Espresso with steamed milk and a thin layer of foam.',
+      category: 'Espresso Drinks',
+      basePrice: 4.25,
+      popular: true,
+      sizes: const [
+        PricedOption(name: 'Small', priceDelta: 0),
+        PricedOption(name: 'Medium', priceDelta: 0.5),
+        PricedOption(name: 'Large', priceDelta: 1.0),
+      ],
+      milkOptions: const [
+        PricedOption(name: 'Whole'),
+        PricedOption(name: 'Oat', priceDelta: 0.6),
+        PricedOption(name: 'Almond', priceDelta: 0.6),
+        PricedOption(name: 'Skim'),
+      ],
+      temperatureOptions: const ['hot', 'iced'],
+      decafAvailable: true,
+      modifiers: const [
+        PricedOption(name: 'Extra Shot', priceDelta: 0.75),
+        PricedOption(name: 'Vanilla Syrup', priceDelta: 0.5),
+        PricedOption(name: 'Caramel Syrup', priceDelta: 0.5),
+      ],
+      dietaryTags: const [],
+    ),
+    MenuItem(
+      id: 'caramel_macchiato',
+      name: 'Caramel Macchiato',
+      description: 'Vanilla-flavored espresso marked with caramel drizzle and milk foam.',
+      category: 'Espresso Drinks',
+      basePrice: 4.75,
+      popular: true,
+      sizes: const [
+        PricedOption(name: 'Small', priceDelta: 0),
+        PricedOption(name: 'Medium', priceDelta: 0.5),
+        PricedOption(name: 'Large', priceDelta: 1.0),
+      ],
+      milkOptions: const [
+        PricedOption(name: 'Whole'),
+        PricedOption(name: 'Oat', priceDelta: 0.6),
+        PricedOption(name: 'Almond', priceDelta: 0.6),
+        PricedOption(name: 'Skim'),
+      ],
+      temperatureOptions: const ['hot', 'iced'],
+      decafAvailable: true,
+      modifiers: const [
+        PricedOption(name: 'Extra Shot', priceDelta: 0.75),
+        PricedOption(name: 'Extra Caramel', priceDelta: 0.4),
+      ],
+      dietaryTags: const [],
+    ),
+    MenuItem(
+      id: 'cappuccino',
+      name: 'Cappuccino',
+      description: 'Equal parts espresso, steamed milk, and thick milk foam.',
+      category: 'Espresso Drinks',
+      basePrice: 4.0,
+      sizes: const [
+        PricedOption(name: 'Small', priceDelta: 0),
+        PricedOption(name: 'Medium', priceDelta: 0.5),
+        PricedOption(name: 'Large', priceDelta: 1.0),
+      ],
+      milkOptions: const [
+        PricedOption(name: 'Whole'),
+        PricedOption(name: 'Oat', priceDelta: 0.6),
+        PricedOption(name: 'Almond', priceDelta: 0.6),
+        PricedOption(name: 'Skim'),
+      ],
+      temperatureOptions: const ['hot'],
+      decafAvailable: true,
+      modifiers: const [
+        PricedOption(name: 'Extra Shot', priceDelta: 0.75),
+      ],
+    ),
+    MenuItem(
+      id: 'americano',
+      name: 'Americano',
+      description: 'Espresso shots topped with hot water for a lighter, smooth taste.',
+      category: 'Espresso Drinks',
+      basePrice: 3.5,
+      sizes: const [
+        PricedOption(name: 'Small', priceDelta: 0),
+        PricedOption(name: 'Medium', priceDelta: 0.5),
+        PricedOption(name: 'Large', priceDelta: 1.0),
+      ],
+      temperatureOptions: const ['hot', 'iced'],
+      decafAvailable: true,
+      modifiers: const [
+        PricedOption(name: 'Extra Shot', priceDelta: 0.75),
+      ],
+      dietaryTags: const ['dairy-free', 'vegan'],
+    ),
+    MenuItem(
+      id: 'cold_brew',
+      name: 'Cold Brew',
+      description: 'Slow-steeped for 18 hours, smooth and naturally low-acid. Not too sweet.',
+      category: 'Cold Drinks',
+      basePrice: 4.0,
+      popular: true,
+      sizes: const [
+        PricedOption(name: 'Medium', priceDelta: 0),
+        PricedOption(name: 'Large', priceDelta: 0.75),
+      ],
+      milkOptions: const [
+        PricedOption(name: 'None'),
+        PricedOption(name: 'Whole'),
+        PricedOption(name: 'Oat', priceDelta: 0.6),
+        PricedOption(name: 'Almond', priceDelta: 0.6),
+      ],
+      temperatureOptions: const ['iced'],
+      modifiers: const [
+        PricedOption(name: 'Vanilla Syrup', priceDelta: 0.5),
+      ],
+      dietaryTags: const ['dairy-free option'],
+    ),
+    MenuItem(
+      id: 'chai_latte',
+      name: 'Chai Latte',
+      description: 'Spiced black tea concentrate with steamed milk.',
+      category: 'Tea',
+      basePrice: 4.25,
+      sizes: const [
+        PricedOption(name: 'Small', priceDelta: 0),
+        PricedOption(name: 'Medium', priceDelta: 0.5),
+        PricedOption(name: 'Large', priceDelta: 1.0),
+      ],
+      milkOptions: const [
+        PricedOption(name: 'Whole'),
+        PricedOption(name: 'Oat', priceDelta: 0.6),
+        PricedOption(name: 'Almond', priceDelta: 0.6),
+      ],
+      temperatureOptions: const ['hot', 'iced'],
+      modifiers: const [],
+    ),
+    MenuItem(
+      id: 'chocolate_croissant',
+      name: 'Chocolate Croissant',
+      description: 'Buttery, flaky croissant filled with dark chocolate.',
+      category: 'Bakery',
+      basePrice: 3.75,
+      allergens: const ['gluten', 'dairy', 'egg'],
+      dietaryTags: const ['vegetarian'],
+    ),
+    MenuItem(
+      id: 'plain_croissant',
+      name: 'Butter Croissant',
+      description: 'Classic buttery, flaky croissant.',
+      category: 'Bakery',
+      basePrice: 3.25,
+      allergens: const ['gluten', 'dairy', 'egg'],
+      dietaryTags: const ['vegetarian'],
+    ),
+    MenuItem(
+      id: 'blueberry_muffin',
+      name: 'Blueberry Muffin',
+      description: 'Moist muffin loaded with blueberries.',
+      category: 'Bakery',
+      basePrice: 3.5,
+      allergens: const ['gluten', 'dairy', 'egg'],
+      dietaryTags: const ['vegetarian'],
+    ),
+  ],
+);

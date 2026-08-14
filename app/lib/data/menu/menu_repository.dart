@@ -1,14 +1,8 @@
 import '../../models/menu.dart';
-import 'seed_menu.dart';
 
-/// Abstraction so the active menu source can move from the hardcoded seed
-/// (Phase 1) to a Supabase-backed, owner-edited menu (Phase 3) without
-/// touching any UI or conversational code.
+/// Every menu load is scoped to one café — there is no global/default menu
+/// getter. A caller that hasn't resolved a café yet must not call this at
+/// all (see currentCafeIdProvider / activeMenuProvider).
 abstract class MenuRepository {
-  Future<CafeMenu> getActiveMenu();
-}
-
-class SeedMenuRepository implements MenuRepository {
-  @override
-  Future<CafeMenu> getActiveMenu() async => seedMenu;
+  Future<CafeMenu> getActiveMenu(String cafeId);
 }

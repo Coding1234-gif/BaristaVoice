@@ -46,6 +46,12 @@ dependencies:
   # File picking for menu PDF/image uploads and product images (web + mobile)
   file_picker: ^8.1.6
 
+  # Persists which café this device last viewed (survives app restarts)
+  shared_preferences: ^2.3.3
+
+  # Renders the "Your Café QR Code" image in the admin dashboard
+  qr_flutter: ^4.1.0
+
   # Backend: Postgres + realtime + storage
   supabase_flutter: ^2.8.0
 

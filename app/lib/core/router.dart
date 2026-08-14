@@ -11,6 +11,7 @@ import '../features/admin/menu/menu_management_screen.dart';
 import '../features/admin/menu/menu_upload_screen.dart';
 import '../features/admin/products/products_screen.dart';
 import '../features/admin/settings/admin_settings_screen.dart';
+import '../features/kiosk/cafe_entry_screen.dart';
 import '../features/kiosk/kiosk_screen.dart';
 import '../state/auth_providers.dart';
 
@@ -49,6 +50,11 @@ final routerProvider = Provider<GoRouter>((ref) {
     },
     routes: [
       GoRoute(path: '/', builder: (context, state) => const KioskScreen()),
+      GoRoute(
+        path: '/cafe/:cafeId',
+        builder: (context, state) =>
+            CafeEntryScreen(cafeIdOrSlug: state.pathParameters['cafeId']!),
+      ),
       GoRoute(
         path: '/admin/login',
         builder: (context, state) => AdminLoginScreen(

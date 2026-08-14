@@ -9,13 +9,14 @@ class Env {
       dotenv.env['REVENUECAT_API_KEY_ANDROID'] ?? '';
   static String get revenueCatApiKeyIos => dotenv.env['REVENUECAT_API_KEY_IOS'] ?? '';
 
-  /// Which cafe this kiosk install serves its (published) menu from. Optional
-  /// — when unset the kiosk falls back to the hardcoded seed menu, so an
-  /// unconfigured install behaves exactly as before this cafe existed.
+  /// Default café this device opens to before any QR/deep link has been
+  /// scanned — for a kiosk tablet permanently mounted at one café. Optional;
+  /// leave blank for a device meant to be scanned into on first use. Once a
+  /// café has actually been selected (scanned, deep-linked, or typed in),
+  /// that persisted choice always wins over this on subsequent launches —
+  /// see currentCafeIdProvider.
   static String get cafeId => dotenv.env['CAFE_ID'] ?? '';
 
   static bool get isSupabaseConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
-
-  static bool get isCafeConfigured => isSupabaseConfigured && cafeId.isNotEmpty;
 }

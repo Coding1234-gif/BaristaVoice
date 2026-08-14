@@ -17,20 +17,21 @@ class LlmOrderAgentService implements OrderAgentService {
 
   @override
   Future<AgentTurnResult> interpret({
+    required String cafeId,
     required String transcript,
     required Order currentOrder,
     required CafeMenu menu,
     required List<ConversationTurn> history,
   }) async {
+    // No `menu` in the request: the function fetches this café's own
+    // published+available products itself and never trusts a client-supplied
+    // product list for what the AI can recommend or price.
     final response = await _client.functions.invoke(
       'order-agent',
       body: {
+        'cafeId': cafeId,
         'transcript': transcript,
         'currentOrder': currentOrder.toJson(),
-        'menu': {
-          'cafeName': menu.cafeName,
-          'items': menu.items.map((i) => i.toJson()).toList(),
-        },
         'history': history.map((h) => h.toJson()).toList(),
       },
     );

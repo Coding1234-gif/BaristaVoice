@@ -1,14 +1,6 @@
 import '../../models/menu.dart';
 
-class Cafe {
-  final String id;
-  final String name;
-
-  const Cafe({required this.id, required this.name});
-
-  factory Cafe.fromJson(Map<String, dynamic> json) =>
-      Cafe(id: json['id'] as String, name: json['name'] as String);
-}
+export '../../models/cafe.dart' show Cafe;
 
 enum MenuItemStatus {
   draft,

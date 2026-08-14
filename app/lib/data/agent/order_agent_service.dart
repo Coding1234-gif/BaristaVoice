@@ -20,8 +20,12 @@ class AgentTurnResult {
 /// Translates natural language into structured order state. Implementations
 /// must never invent menu items, options or prices that aren't present in
 /// the [CafeMenu] passed in — grounding against the menu is the whole point.
+/// [cafeId] identifies which café's products the AI is even allowed to
+/// consider; the app never decides recommendations for a café other than
+/// the one currently selected.
 abstract class OrderAgentService {
   Future<AgentTurnResult> interpret({
+    required String cafeId,
     required String transcript,
     required Order currentOrder,
     required CafeMenu menu,

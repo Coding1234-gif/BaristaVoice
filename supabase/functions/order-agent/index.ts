@@ -2,16 +2,27 @@
 //
 // Holds the LLM API key server-side and turns one customer utterance into
 // (a) a natural-language reply and (b) the FULL updated structured order.
-// The menu is passed in on every request and is the only source of truth
-// for valid items/options — this function grounds and validates the LLM's
-// output against it so the conversation can never invent a menu item,
-// option or price.
 //
-// Provider is a manual switch, not automatic failover: set LLM_PROVIDER to
-// "gemini" or "groq" and LLM_API_KEY to that provider's key. Flip both in
-// Supabase secrets (no redeploy needed) if one provider's free tier runs
-// dry — the request/response contract to the Flutter app never changes.
-import { corsHeaders } from "../_shared/cors.ts";
+// The client sends a cafeId, NOT a menu — this function fetches that café's
+// PUBLISHED, available products itself (same query shape the RLS policy on
+// menu_items enforces: `status = 'published'`) and is the only source of
+// truth for valid items/options fed to the model. This means the AI can
+// never be steered into recommending or pricing another café's products (or
+// draft/unpublished ones) no matter what a client sends — the café is
+// resolved and the product list is built entirely server-side.
+import { createClient } from "jsr:@supabase/supabase-js@2";
+
+// Inlined (rather than imported from ../_shared/cors.ts) so this file is
+// self-contained and can be pasted directly into the Supabase Dashboard's
+// Edge Function editor, which doesn't resolve cross-function relative
+// imports the way `supabase functions deploy` does.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 type Provider = "gemini" | "groq";
 
@@ -33,6 +44,8 @@ interface MenuItem {
   category: string;
   basePrice: number;
   popular: boolean;
+  imageUrl?: string | null;
+  available?: boolean;
   sizes: PricedOption[];
   milkOptions: PricedOption[];
   temperatureOptions: string[];
@@ -60,9 +73,9 @@ interface OrderItemIn {
 }
 
 interface RequestBody {
+  cafeId: string;
   transcript: string;
   currentOrder: { items: OrderItemIn[]; status?: string };
-  menu: Menu;
   history: { role: "customer" | "assistant"; text: string }[];
 }
 
@@ -305,6 +318,31 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
   return result;
 }
 
+/** Fetches ONE café's published, available products straight from the
+ * database (anon key, same RLS a customer's own client is bound by) — the
+ * only place this function decides what the AI is even allowed to see.
+ * Never trusts anything about product identity/pricing from the client. */
+async function fetchCafeMenu(cafeId: string): Promise<Menu | null> {
+  const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const { data: cafe } = await supabase.from("cafes").select("name").eq("id", cafeId).maybeSingle();
+  if (!cafe) return null;
+
+  const { data: rows, error } = await supabase
+    .from("menu_items")
+    .select("data")
+    .eq("cafe_id", cafeId)
+    .eq("status", "published");
+
+  if (error) throw new Error(`Could not load menu: ${error.message}`);
+
+  const items = ((rows ?? []) as { data: MenuItem }[])
+    .map((row) => row.data)
+    .filter((item) => item.available !== false);
+
+  return { cafeName: cafe.name as string, items };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -319,7 +357,38 @@ Deno.serve(async (req) => {
 
   try {
     const body = (await req.json()) as RequestBody;
-    const { transcript, currentOrder, menu, history } = body;
+    const { cafeId, transcript, currentOrder, history } = body;
+
+    if (!cafeId) {
+      return new Response(JSON.stringify({ error: "cafeId is required." }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const menu = await fetchCafeMenu(cafeId);
+
+    if (!menu) {
+      return new Response(
+        JSON.stringify({
+          reply: "Sorry, we couldn't find this café.",
+          order: currentOrder,
+          needsClarification: true,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    if (menu.items.length === 0) {
+      return new Response(
+        JSON.stringify({
+          reply: `${menu.cafeName} hasn't published its menu yet — nothing to order right now.`,
+          order: currentOrder,
+          needsClarification: true,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     const result =
       LLM_PROVIDER === "groq"

@@ -6,6 +6,7 @@ import '../data/agent/order_agent_service.dart';
 import '../data/speech/speech_service.dart';
 import '../models/menu.dart';
 import '../models/order.dart';
+import 'cafe_providers.dart';
 import 'providers.dart';
 
 enum ListeningStatus { idle, listening, thinking }
@@ -54,10 +55,12 @@ class KioskController extends StateNotifier<KioskState> {
   final SpeechService _speech;
   final OrderAgentService _agent;
   final CafeMenu _menu;
+  final String _cafeId;
 
   static const int _maxHistoryTurns = 12;
 
-  KioskController(this._speech, this._agent, this._menu) : super(const KioskState());
+  KioskController(this._speech, this._agent, this._menu, this._cafeId)
+      : super(const KioskState());
 
   Future<void> startListening() async {
     if (state.listeningStatus != ListeningStatus.idle) return;
@@ -121,6 +124,7 @@ class KioskController extends StateNotifier<KioskState> {
 
     try {
       final result = await _agent.interpret(
+        cafeId: _cafeId,
         transcript: transcript,
         currentOrder: state.order,
         menu: _menu,
@@ -158,13 +162,19 @@ class KioskController extends StateNotifier<KioskState> {
   }
 }
 
+/// Only ever mounted by KioskScreen once a café is selected and its menu has
+/// loaded (see _KioskBody) — cafeId/menu here reflect whatever was current
+/// at that point, and Riverpod rebuilds this (fresh controller, fresh state)
+/// whenever currentCafeIdProvider changes, e.g. on "Change café".
 final kioskControllerProvider =
     StateNotifierProvider<KioskController, KioskState>((ref) {
+  final cafeId = ref.watch(currentCafeIdProvider) ?? '';
   final menuAsync = ref.watch(activeMenuProvider);
   final menu = menuAsync.value ?? const CafeMenu(cafeName: '', items: []);
   return KioskController(
     ref.watch(speechServiceProvider),
     ref.watch(orderAgentServiceProvider),
     menu,
+    cafeId,
   );
 });

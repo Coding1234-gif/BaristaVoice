@@ -16,6 +16,22 @@ create table if not exists cafes (
   created_at timestamptz not null default now()
 );
 
+-- Public café-facing details (QR/deep-link header, admin's "Your Café QR
+-- Code" section). `slug` is optional — real cafés are addressed by their
+-- `id` (what the QR/deep link actually encodes); only the demo café uses a
+-- human-friendly slug ('demo') so /cafe/demo is easy to type by hand.
+alter table cafes add column if not exists logo_url text;
+alter table cafes add column if not exists description text;
+alter table cafes add column if not exists address text;
+alter table cafes add column if not exists slug text;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'cafes_slug_key') then
+    alter table cafes add constraint cafes_slug_key unique (slug);
+  end if;
+end $$;
+
 -- One row per authenticated Supabase Auth user. Created either by the
 -- create_cafe_admin_account() RPC (cafe_admin signup) or manually in the SQL
 -- editor for a super_admin. There is no self-serve customer signup today —
@@ -334,9 +350,33 @@ create policy "cafe admin manages own menu upload files" on storage.objects for 
     and (public.current_role() = 'super_admin' or (public.current_role() = 'cafe_admin' and (storage.foldername(name))[1] = public.current_cafe_id()::text))
   );
 
--- Seed one demo cafe row so menu_uploads/menu_items/orders have a parent.
-insert into cafes (name) values ('Corner Coffee Co.')
-on conflict do nothing;
+-- ---------------------------------------------------------------------------
+-- Demo café: a REAL published café reachable at /cafe/demo exactly like any
+-- other café's /cafe/{id} — there is no separate hardcoded "default menu"
+-- code path anywhere in the app. Idempotent: only seeds menu_items the first
+-- time (won't duplicate rows or clobber owner edits on re-run).
+-- ---------------------------------------------------------------------------
+
+insert into cafes (name, slug, description)
+values ('Demo Café', 'demo', 'Try the AI ordering assistant with a sample menu.')
+on conflict (slug) do nothing;
+
+do $$
+declare
+  demo_cafe_id uuid;
+begin
+  select id into demo_cafe_id from cafes where slug = 'demo';
+
+  if demo_cafe_id is not null and not exists (select 1 from menu_items where cafe_id = demo_cafe_id) then
+    insert into menu_items (cafe_id, status, data) values
+      (demo_cafe_id, 'published', '{"id":"latte","name":"Latte","description":"Espresso with steamed milk and a thin layer of foam.","category":"Espresso Drinks","basePrice":4.25,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6},{"name":"Almond","priceDelta":0.6},{"name":"Skim","priceDelta":0}],"temperatureOptions":["hot","iced"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75},{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":[]}'::jsonb),
+      (demo_cafe_id, 'published', '{"id":"cold_brew","name":"Cold Brew","description":"Slow-steeped for 18 hours, smooth and naturally low-acid. Not too sweet.","category":"Cold Drinks","basePrice":4.0,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Medium","priceDelta":0},{"name":"Large","priceDelta":0.75}],"milkOptions":[{"name":"None","priceDelta":0},{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["iced"],"decafAvailable":false,"modifiers":[{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":["dairy-free option"]}'::jsonb),
+      (demo_cafe_id, 'published', '{"id":"cappuccino","name":"Cappuccino","description":"Equal parts espresso, steamed milk, and thick milk foam.","category":"Espresso Drinks","basePrice":4.0,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75}],"allergens":[],"dietaryTags":[]}'::jsonb),
+      (demo_cafe_id, 'published', '{"id":"chai_latte","name":"Chai Latte","description":"Spiced black tea concentrate with steamed milk.","category":"Tea","basePrice":4.25,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot","iced"],"decafAvailable":false,"modifiers":[],"allergens":[],"dietaryTags":[]}'::jsonb),
+      (demo_cafe_id, 'published', '{"id":"chocolate_croissant","name":"Chocolate Croissant","description":"Buttery, flaky croissant filled with dark chocolate.","category":"Bakery","basePrice":3.75,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb),
+      (demo_cafe_id, 'published', '{"id":"blueberry_muffin","name":"Blueberry Muffin","description":"Moist muffin loaded with blueberries.","category":"Bakery","basePrice":3.5,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb);
+  end if;
+end $$;
 
 -- To create a super_admin: sign a user up normally via Supabase Auth (or the
 -- dashboard), then run:

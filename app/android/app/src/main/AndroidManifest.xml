@@ -26,6 +26,24 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Café QR/deep link: baristavoice://open/cafe/{cafeId}. `open`
+                 is a fixed, meaningless host — Android's intent-filter data
+                 matching only applies pathPrefix when a host is present, and
+                 go_router matches purely on the URI path, so the real
+                 "/cafe/{cafeId}" needs to land in the path, not the host
+                 (see CafeLinks in app/lib/core/cafe_links.dart, which builds
+                 this exact URI). A custom scheme needs no domain
+                 verification (unlike https App Links), so this works
+                 immediately without hosting an assetlinks.json — the
+                 tradeoff is the OS won't offer this app for a plain
+                 https://.../cafe/{id} link unless App Links are configured
+                 separately later. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="baristavoice" android:host="open" android:pathPrefix="/cafe"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

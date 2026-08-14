@@ -8,19 +8,21 @@ import '../data/menu/menu_repository.dart';
 import '../data/menu/supabase_menu_repository.dart';
 import '../data/speech/speech_service.dart';
 import '../models/menu.dart';
+import 'cafe_providers.dart';
 
-/// Falls back to the hardcoded seed menu unless this kiosk install has both
-/// Supabase and a CAFE_ID configured — an unconfigured install behaves
-/// exactly as it did before the cafe admin dashboard existed.
 final menuRepositoryProvider = Provider<MenuRepository>((ref) {
-  if (Env.isCafeConfigured) {
-    return SupabaseMenuRepository(Supabase.instance.client, Env.cafeId);
-  }
-  return SeedMenuRepository();
+  return SupabaseMenuRepository(Supabase.instance.client);
 });
 
-final activeMenuProvider = FutureProvider<CafeMenu>((ref) {
-  return ref.watch(menuRepositoryProvider).getActiveMenu();
+/// Null whenever no café is selected — this is the ONLY menu provider the
+/// customer app reads from, and it always resolves through
+/// currentCafeIdProvider. There is deliberately no code path here that
+/// returns a menu without a café id, so nothing can silently display a
+/// global/default menu.
+final activeMenuProvider = FutureProvider<CafeMenu?>((ref) async {
+  final cafeId = ref.watch(currentCafeIdProvider);
+  if (cafeId == null) return null;
+  return ref.watch(menuRepositoryProvider).getActiveMenu(cafeId);
 });
 
 final orderAgentServiceProvider = Provider<OrderAgentService>((ref) {

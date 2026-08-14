@@ -13,7 +13,15 @@
 // profile.cafe_id is checked against it — a cafe_admin can never trigger
 // extraction for another cafe's upload, no matter what id they pass in.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
+
+// Inlined (rather than imported from ../_shared/cors.ts) so this file is
+// self-contained and can be pasted directly into the Supabase Dashboard's
+// Edge Function editor, which doesn't resolve cross-function relative
+// imports the way `supabase functions deploy` does.
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;

@@ -7,6 +7,9 @@ import '../data/agent/order_agent_service.dart';
 import '../data/menu/menu_repository.dart';
 import '../data/menu/supabase_menu_repository.dart';
 import '../data/speech/speech_service.dart';
+import '../data/tts/elevenlabs_tts_service.dart';
+import '../data/tts/tts_service.dart';
+import '../data/tts/tts_transport.dart';
 import '../models/menu.dart';
 import 'cafe_providers.dart';
 
@@ -36,3 +39,15 @@ final orderAgentServiceProvider = Provider<OrderAgentService>((ref) {
 });
 
 final speechServiceProvider = Provider<SpeechService>((ref) => SpeechService());
+
+/// Calls the `tts-speak` Supabase Edge Function, which holds the ElevenLabs
+/// API key server-side (see [TtsService]) — the client never sees it.
+final ttsServiceProvider = Provider<TtsService>((ref) {
+  if (!Env.isSupabaseConfigured) {
+    throw StateError(
+      'Supabase is not configured yet. Add SUPABASE_URL and SUPABASE_ANON_KEY '
+      'to app/.env — see .env.example.',
+    );
+  }
+  return ElevenLabsTtsService(SupabaseTtsTransport(Supabase.instance.client));
+});

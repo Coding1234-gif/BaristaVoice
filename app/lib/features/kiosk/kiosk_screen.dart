@@ -8,6 +8,7 @@ import '../../models/menu.dart';
 import '../../state/cafe_providers.dart';
 import '../../state/kiosk_controller.dart';
 import '../../state/providers.dart';
+import '../../state/tts_playback_controller.dart';
 import 'widgets/conversation_panel.dart';
 import 'widgets/mic_button.dart';
 import 'widgets/order_summary_panel.dart';
@@ -381,6 +382,13 @@ class _ErrorState extends StatelessWidget {
 /// conversation/mic area, like a persistent cart bar — unchanged from the
 /// original layout, just no longer carrying its own café-name header row
 /// (that's now _CafeHeader, shown once above regardless of menu state).
+///
+/// Voice is the primary interaction here, not the transcript: the mic/phase
+/// indicator ([MicButton], driven by [kioskPhaseProvider]) leads, the
+/// transcript ([ConversationPanel]) follows underneath as a secondary,
+/// smaller strip for verification/accessibility — see [ConversationPanel]'s
+/// own styling. Until the customer taps "Start Order" ([_StartOrderGate]),
+/// none of this shows — that first tap is what unlocks autoplay.
 class _KioskBody extends ConsumerWidget {
   final CafeMenu menu;
   const _KioskBody({required this.menu});
@@ -388,25 +396,36 @@ class _KioskBody extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final kioskState = ref.watch(kioskControllerProvider);
+
+    if (!kioskState.audioUnlocked) {
+      return _StartOrderGate(cafeName: menu.cafeName);
+    }
+
     final controller = ref.read(kioskControllerProvider.notifier);
+    final phase = ref.watch(kioskPhaseProvider);
+    final ttsStatus = ref.watch(ttsPlaybackControllerProvider).status;
 
     return Column(
       children: [
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+            padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
             child: Column(
               children: [
+                MicButton(
+                  phase: phase,
+                  onTap: controller.startListening,
+                ),
+                if (ttsStatus == TtsPlaybackStatus.blocked) ...[
+                  const SizedBox(height: 16),
+                  const _EnableAudioBanner(),
+                ],
+                const SizedBox(height: 28),
                 ConversationPanel(
                   liveTranscript: kioskState.liveTranscript,
                   assistantReply: kioskState.assistantReply,
                   errorMessage: kioskState.errorMessage,
                   isListening: kioskState.listeningStatus == ListeningStatus.listening,
-                ),
-                const SizedBox(height: 32),
-                MicButton(
-                  status: kioskState.listeningStatus,
-                  onTap: controller.startListening,
                 ),
               ],
             ),
@@ -415,9 +434,96 @@ class _KioskBody extends ConsumerWidget {
         OrderSummaryPanel(
           order: kioskState.order,
           menu: menu,
-          onConfirm: controller.confirmOrder,
+          isReviewing: kioskState.isReviewingOrder,
+          onReview: controller.beginOrderReview,
+          onConfirmYes: controller.confirmOrder,
+          onConfirmNo: controller.cancelOrderReview,
         ),
       ],
+    );
+  }
+}
+
+/// The one explicit tap the flow asks for (section 9 of the voice-first
+/// spec): establishes audio playback permission on browsers that require a
+/// user gesture before any autoplay, via
+/// `TtsPlaybackController.unlockAudio`. Every AI reply after this point
+/// plays automatically, no further taps needed.
+class _StartOrderGate extends ConsumerWidget {
+  final String cafeName;
+  const _StartOrderGate({required this.cafeName});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.read(kioskControllerProvider.notifier);
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.record_voice_over, size: 56, color: theme.colorScheme.primary),
+            const SizedBox(height: 20),
+            Text(
+              cafeName.isEmpty ? 'Ready to order?' : 'Ready to order at $cafeName?',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "Tap Start Order, then just talk — I'll answer out loud as we go.",
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 28),
+            FilledButton.icon(
+              onPressed: controller.startOrder,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('Start Order'),
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown once, only if the browser actually blocked autoplay despite the
+/// "Start Order" unlock attempt — a single tap here (a fresh user gesture)
+/// resumes whatever TTS clip was blocked. See
+/// `TtsPlaybackController.retryBlockedPlayback`.
+class _EnableAudioBanner extends ConsumerWidget {
+  const _EnableAudioBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final controller = ref.read(ttsPlaybackControllerProvider.notifier);
+    final theme = Theme.of(context);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.errorContainer,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.volume_off, color: theme.colorScheme.onErrorContainer, size: 18),
+          const SizedBox(width: 8),
+          Text('Audio is blocked', style: TextStyle(color: theme.colorScheme.onErrorContainer)),
+          const SizedBox(width: 4),
+          TextButton(
+            onPressed: controller.retryBlockedPlayback,
+            child: const Text('Enable Audio'),
+          ),
+        ],
+      ),
     );
   }
 }

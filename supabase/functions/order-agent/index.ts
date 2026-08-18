@@ -24,6 +24,36 @@ const corsHeaders = {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
+/** Per-request stage timing. Logged server-side (numbers only — never
+ * transcript/order content) on every request so the Supabase function logs
+ * show a latency breakdown for real traffic. Also echoed back in the
+ * response body as `_timing`, but only when the caller sends
+ * `x-debug-timing: 1` — normal client requests never see this field. */
+class RequestTimer {
+  private readonly id: string;
+  private readonly t0: number;
+  private marks: { label: string; atMs: number }[] = [];
+
+  constructor(id: string) {
+    this.id = id;
+    this.t0 = performance.now();
+  }
+
+  mark(label: string) {
+    this.marks.push({ label, atMs: Math.round(performance.now() - this.t0) });
+  }
+
+  summary(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const m of this.marks) out[m.label] = m.atMs;
+    return out;
+  }
+
+  log() {
+    console.log(`[order-agent ${this.id}]`, JSON.stringify(this.summary()));
+  }
+}
+
 type Provider = "gemini" | "groq";
 
 const LLM_PROVIDER = (Deno.env.get("LLM_PROVIDER") ?? "gemini") as Provider;
@@ -70,6 +100,7 @@ interface OrderItemIn {
   temperature?: string | null;
   decaf?: boolean;
   modifiers?: string[];
+  specialRequest?: string | null;
 }
 
 interface RequestBody {
@@ -107,6 +138,7 @@ Hard rules — never break these:
 - "Another one" / "same again" means add another of the most recently discussed matching item (increase quantity if identical, otherwise add a new line).
 - Pure questions ("what's popular", "what's in that", "how much is my order") must NOT change the order — answer in reply and return the order exactly as it was.
 - Always call ${TOOL_NAME} with the complete current list of items (not a diff) — including ones you didn't just change.
+- If the customer adds a special request that isn't one of the menu's structured options (e.g. "extra hot", "light ice", "no whip", "cup with a lid"), capture it verbatim in that item's specialRequest field instead of dropping it or inventing a matching modifier. Don't put anything in specialRequest that's actually one of the menu's real sizes/milk/temperature/modifiers — use the proper field for those.
 
 MENU (json):
 ${JSON.stringify(menu)}
@@ -141,6 +173,7 @@ function buildGeminiFunctionDeclaration(menu: Menu) {
                   temperature: { type: "STRING", nullable: true },
                   decaf: { type: "BOOLEAN" },
                   modifiers: { type: "ARRAY", items: { type: "STRING" } },
+                  specialRequest: { type: "STRING", nullable: true },
                 },
                 required: ["menuItemId", "quantity"],
               },
@@ -180,8 +213,13 @@ function buildOpenAiTool(menu: Menu) {
                     size: { type: ["string", "null"] },
                     milk: { type: ["string", "null"] },
                     temperature: { type: ["string", "null"] },
-                    decaf: { type: "boolean" },
+                    // Groq enforces this schema strictly server-side (unlike
+                    // Gemini) and the model sometimes emits `null` here
+                    // instead of `false` — must accept both since
+                    // validateAndEnrich already treats null as falsy.
+                    decaf: { type: ["boolean", "null"] },
                     modifiers: { type: "array", items: { type: "string" } },
+                    specialRequest: { type: ["string", "null"] },
                   },
                   required: ["menuItemId", "quantity"],
                 },
@@ -200,7 +238,9 @@ async function callGemini(
   menu: Menu,
   currentOrder: RequestBody["currentOrder"],
   transcript: string,
-  history: RequestBody["history"]
+  history: RequestBody["history"],
+  timer: RequestTimer,
+  debugRef?: { info?: unknown }
 ): Promise<LlmToolResult | null> {
   const contents = [
     ...(history ?? []).map((h) => ({
@@ -210,6 +250,7 @@ async function callGemini(
     { role: "user", parts: [{ text: transcript }] },
   ];
 
+  timer.mark("llm_request_start");
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${LLM_MODEL}:generateContent`,
     {
@@ -222,19 +263,34 @@ async function callGemini(
         tool_config: {
           function_calling_config: { mode: "ANY", allowed_function_names: [TOOL_NAME] },
         },
+        // This is a deterministic structured-extraction task (pick a tool
+        // call, fill known fields from a short menu) — it doesn't benefit
+        // from extended reasoning, and measurement showed the default
+        // (unbounded) thinking budget was the dominant source of latency
+        // (single-digit seconds normally, 19-21s on some turns).
+        generationConfig: {
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     }
   );
+  timer.mark("llm_response_headers_received");
 
   if (!res.ok) {
-    console.error("Gemini API error:", res.status, await res.text());
+    const text = await res.text();
+    console.error("Gemini API error:", res.status, text);
+    if (debugRef) debugRef.info = { status: res.status, body: text.slice(0, 2000) };
     return null;
   }
 
   const data = await res.json();
+  timer.mark("llm_response_body_parsed");
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   const functionCallPart = parts.find((p: { functionCall?: unknown }) => p.functionCall);
-  if (!functionCallPart) return null;
+  if (!functionCallPart) {
+    if (debugRef) debugRef.info = { status: res.status, candidates: data.candidates, promptFeedback: data.promptFeedback };
+    return null;
+  }
 
   return functionCallPart.functionCall.args as LlmToolResult;
 }
@@ -243,7 +299,9 @@ async function callGroq(
   menu: Menu,
   currentOrder: RequestBody["currentOrder"],
   transcript: string,
-  history: RequestBody["history"]
+  history: RequestBody["history"],
+  timer: RequestTimer,
+  debugRef?: { info?: unknown }
 ): Promise<LlmToolResult | null> {
   const messages = [
     { role: "system", content: buildSystemPrompt(menu, currentOrder) },
@@ -254,6 +312,7 @@ async function callGroq(
     { role: "user", content: transcript },
   ];
 
+  timer.mark("llm_request_start");
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -267,13 +326,17 @@ async function callGroq(
       tool_choice: { type: "function", function: { name: TOOL_NAME } },
     }),
   });
+  timer.mark("llm_response_headers_received");
 
   if (!res.ok) {
-    console.error("Groq API error:", res.status, await res.text());
+    const text = await res.text();
+    console.error("Groq API error:", res.status, text);
+    if (debugRef) debugRef.info = { status: res.status, body: text.slice(0, 2000) };
     return null;
   }
 
   const data = await res.json();
+  timer.mark("llm_response_body_parsed");
   const toolCall = data.choices?.[0]?.message?.tool_calls?.[0];
   if (!toolCall) return null;
 
@@ -302,6 +365,12 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
     const modifiers = (raw.modifiers ?? []).filter((m) =>
       menuItem.modifiers.some((mod) => mod.name === m)
     );
+    // Free text (e.g. "extra hot", "no whip") — not menu-validated like the
+    // structured fields above, just length-capped so one turn can't smuggle
+    // in an unbounded blob of text.
+    const specialRequest = raw.specialRequest?.trim()
+      ? raw.specialRequest.trim().slice(0, 140)
+      : null;
 
     result.push({
       id: raw.id,
@@ -313,6 +382,7 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
       temperature,
       decaf,
       modifiers,
+      specialRequest,
     });
   }
   return result;
@@ -322,18 +392,20 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
  * database (anon key, same RLS a customer's own client is bound by) — the
  * only place this function decides what the AI is even allowed to see.
  * Never trusts anything about product identity/pricing from the client. */
-async function fetchCafeMenu(cafeId: string): Promise<Menu | null> {
+async function fetchCafeMenu(cafeId: string, timer: RequestTimer): Promise<Menu | null> {
   const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  const { data: cafe } = await supabase.from("cafes").select("name").eq("id", cafeId).maybeSingle();
+  // The café-name lookup and the menu-items lookup don't depend on each
+  // other (both only need cafeId) — run them concurrently instead of
+  // serially so this stage costs one round trip instead of two.
+  timer.mark("db_fetch_start");
+  const [{ data: cafe }, { data: rows, error }] = await Promise.all([
+    supabase.from("cafes").select("name").eq("id", cafeId).maybeSingle(),
+    supabase.from("menu_items").select("data").eq("cafe_id", cafeId).eq("status", "published"),
+  ]);
+  timer.mark("db_fetch_end");
+
   if (!cafe) return null;
-
-  const { data: rows, error } = await supabase
-    .from("menu_items")
-    .select("data")
-    .eq("cafe_id", cafeId)
-    .eq("status", "published");
-
   if (error) throw new Error(`Could not load menu: ${error.message}`);
 
   const items = ((rows ?? []) as { data: MenuItem }[])
@@ -355,9 +427,19 @@ Deno.serve(async (req) => {
     );
   }
 
+  // Correlates this request's timing marks with the client-side pipeline
+  // stages (STT/TTS) logged in the app — the client generates and sends one
+  // id per customer turn. Falls back to a server-generated id for calls
+  // that don't send one (e.g. the debug curl probes used to measure this).
+  const requestId = req.headers.get("x-request-id") ?? crypto.randomUUID().slice(0, 8);
+  const debugTiming = req.headers.get("x-debug-timing") === "1";
+  const timer = new RequestTimer(requestId);
+  timer.mark("request_received");
+
   try {
     const body = (await req.json()) as RequestBody;
     const { cafeId, transcript, currentOrder, history } = body;
+    timer.mark("body_parsed");
 
     if (!cafeId) {
       return new Response(JSON.stringify({ error: "cafeId is required." }), {
@@ -366,7 +448,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const menu = await fetchCafeMenu(cafeId);
+    const menu = await fetchCafeMenu(cafeId, timer);
 
     if (!menu) {
       return new Response(
@@ -390,34 +472,41 @@ Deno.serve(async (req) => {
       );
     }
 
+    const debugRef: { info?: unknown } = {};
     const result =
       LLM_PROVIDER === "groq"
-        ? await callGroq(menu, currentOrder, transcript, history)
-        : await callGemini(menu, currentOrder, transcript, history);
+        ? await callGroq(menu, currentOrder, transcript, history, timer, debugRef)
+        : await callGemini(menu, currentOrder, transcript, history, timer, debugRef);
 
     if (!result) {
+      timer.log();
       return new Response(
         JSON.stringify({
           reply: FALLBACK_REPLY,
           order: currentOrder,
           needsClarification: true,
+          ...(debugTiming ? { _timing: { requestId, ...timer.summary() }, _debug: debugRef.info } : {}),
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
     const validatedItems = validateAndEnrich(result.order?.items ?? [], menu);
+    timer.mark("validated");
+    timer.log();
 
     return new Response(
       JSON.stringify({
         reply: result.reply ?? FALLBACK_REPLY,
         needsClarification: Boolean(result.needsClarification),
         order: { items: validatedItems, status: currentOrder.status ?? "draft" },
+        ...(debugTiming ? { _timing: { requestId, ...timer.summary() } } : {}),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
     console.error("order-agent error:", err);
+    timer.log();
     return new Response(
       JSON.stringify({
         reply: FALLBACK_REPLY,

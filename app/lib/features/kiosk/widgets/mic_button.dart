@@ -2,11 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../../../state/kiosk_controller.dart';
 
+/// The primary "what's happening right now" indicator, per
+/// `KioskPhase` — this is the big, glanceable state the customer reads
+/// instead of the transcript. Tapping while [KioskPhase.speaking] is the
+/// app's barge-in: it interrupts the AI and starts listening (see
+/// `KioskController.startListening`, which stops TTS playback first).
 class MicButton extends StatelessWidget {
-  final ListeningStatus status;
+  final KioskPhase phase;
   final VoidCallback onTap;
 
-  const MicButton({super.key, required this.status, required this.onTap});
+  const MicButton({super.key, required this.phase, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -14,21 +19,26 @@ class MicButton extends StatelessWidget {
     final IconData icon;
     final String label;
 
-    switch (status) {
-      case ListeningStatus.idle:
+    switch (phase) {
+      case KioskPhase.idle:
         color = Theme.of(context).colorScheme.primary;
         icon = Icons.mic;
         label = 'Tap to talk';
         break;
-      case ListeningStatus.listening:
+      case KioskPhase.listening:
         color = Colors.redAccent;
         icon = Icons.graphic_eq;
         label = 'Listening…';
         break;
-      case ListeningStatus.thinking:
+      case KioskPhase.thinking:
         color = Colors.orangeAccent;
         icon = Icons.hourglass_top;
         label = 'Thinking…';
+        break;
+      case KioskPhase.speaking:
+        color = Colors.deepPurpleAccent;
+        icon = Icons.campaign;
+        label = 'Speaking… tap to interrupt';
         break;
     }
 
@@ -36,7 +46,7 @@ class MicButton extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         GestureDetector(
-          onTap: status == ListeningStatus.thinking ? null : onTap,
+          onTap: phase == KioskPhase.thinking ? null : onTap,
           child: AnimatedContainer(
             duration: const Duration(milliseconds: 200),
             width: 96,
@@ -47,12 +57,12 @@ class MicButton extends StatelessWidget {
               boxShadow: [
                 BoxShadow(
                   color: color.withValues(alpha: 0.35),
-                  blurRadius: status == ListeningStatus.listening ? 24 : 8,
-                  spreadRadius: status == ListeningStatus.listening ? 4 : 0,
+                  blurRadius: phase == KioskPhase.listening || phase == KioskPhase.speaking ? 24 : 8,
+                  spreadRadius: phase == KioskPhase.listening || phase == KioskPhase.speaking ? 4 : 0,
                 ),
               ],
             ),
-            child: status == ListeningStatus.thinking
+            child: phase == KioskPhase.thinking
                 ? const Padding(
                     padding: EdgeInsets.all(28.0),
                     child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
@@ -61,7 +71,7 @@ class MicButton extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        Text(label, style: Theme.of(context).textTheme.titleMedium),
+        Text(label, style: Theme.of(context).textTheme.titleMedium, textAlign: TextAlign.center),
       ],
     );
   }

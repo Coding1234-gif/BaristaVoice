@@ -1,13 +1,17 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/agent/conversation_turn.dart';
 import '../data/agent/order_agent_service.dart';
+import '../data/agent/order_confirmation_speech.dart';
 import '../data/speech/speech_service.dart';
 import '../models/menu.dart';
 import '../models/order.dart';
 import 'cafe_providers.dart';
 import 'providers.dart';
+import 'tts_playback_controller.dart';
 
 enum ListeningStatus { idle, listening, thinking }
 
@@ -19,6 +23,16 @@ class KioskState {
   final String? assistantReply;
   final String? errorMessage;
 
+  /// Whether the customer has tapped "Start Order" yet. That first tap is
+  /// what lets [KioskController.startOrder] spend a user gesture unlocking
+  /// autoplay (see `TtsPlaybackController.unlockAudio`) — before that, the
+  /// UI shows the start screen instead of the ordering flow.
+  final bool audioUnlocked;
+
+  /// True while the deterministic order-confirmation summary is being
+  /// spoken/shown and the customer hasn't said yes/no to it yet.
+  final bool isReviewingOrder;
+
   const KioskState({
     this.listeningStatus = ListeningStatus.idle,
     this.liveTranscript = '',
@@ -26,6 +40,8 @@ class KioskState {
     this.history = const [],
     this.assistantReply,
     this.errorMessage,
+    this.audioUnlocked = false,
+    this.isReviewingOrder = false,
   });
 
   KioskState copyWith({
@@ -36,6 +52,8 @@ class KioskState {
     String? assistantReply,
     String? errorMessage,
     bool clearError = false,
+    bool? audioUnlocked,
+    bool? isReviewingOrder,
   }) {
     return KioskState(
       listeningStatus: listeningStatus ?? this.listeningStatus,
@@ -44,6 +62,8 @@ class KioskState {
       history: history ?? this.history,
       assistantReply: assistantReply ?? this.assistantReply,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+      audioUnlocked: audioUnlocked ?? this.audioUnlocked,
+      isReviewingOrder: isReviewingOrder ?? this.isReviewingOrder,
     );
   }
 }
@@ -51,19 +71,41 @@ class KioskState {
 /// Drives the conversational ordering loop: mic -> transcript -> agent ->
 /// updated order state. The structured [Order] is always what's rendered;
 /// conversation text is only ever a means to change it.
+///
+/// Also owns when the AI *speaks*: every reply auto-plays through
+/// [TtsPlaybackController] as soon as it arrives (see [_submitTranscript]),
+/// and starting to listen again always interrupts whatever is currently
+/// playing first (see [startListening]) — that's the app's barge-in: tap
+/// the mic while the AI is mid-sentence and it stops immediately.
 class KioskController extends StateNotifier<KioskState> {
   final SpeechService _speech;
   final OrderAgentService _agent;
+  final TtsPlaybackController _tts;
   final CafeMenu _menu;
   final String _cafeId;
 
   static const int _maxHistoryTurns = 12;
 
-  KioskController(this._speech, this._agent, this._menu, this._cafeId)
+  KioskController(this._speech, this._agent, this._tts, this._menu, this._cafeId)
       : super(const KioskState());
+
+  /// Spends the "Start Order" tap's user gesture on unlocking audio
+  /// playback (see `TtsPlaybackController.unlockAudio`), then reveals the
+  /// normal ordering UI. Safe to call more than once — only the first call
+  /// does anything.
+  Future<void> startOrder() async {
+    if (state.audioUnlocked) return;
+    await _tts.unlockAudio();
+    state = state.copyWith(audioUnlocked: true);
+  }
 
   Future<void> startListening() async {
     if (state.listeningStatus != ListeningStatus.idle) return;
+
+    // Barge-in: tapping the mic while the AI is speaking (or about to
+    // speak) means "stop talking, I have something to say" — interrupt
+    // whatever TTS is doing before anything else.
+    await _tts.stop();
 
     final available = await _speech.initialize(
       onStatus: (status) => debugPrint('[speech] status: $status'),
@@ -92,6 +134,7 @@ class KioskController extends StateNotifier<KioskState> {
       listeningStatus: ListeningStatus.listening,
       liveTranscript: '',
       clearError: true,
+      isReviewingOrder: false,
     );
 
     await _speech.startListening(
@@ -138,6 +181,11 @@ class KioskController extends StateNotifier<KioskState> {
         assistantReply: result.reply,
         history: [...state.history, assistantTurn],
       );
+
+      // Auto-play: the customer never has to press play for a normal
+      // reply. Not awaited — speech happens in the background while the
+      // rest of the UI (order summary, transcript) is already updated.
+      unawaited(_tts.speak(result.reply));
     } catch (_) {
       state = state.copyWith(
         listeningStatus: ListeningStatus.idle,
@@ -153,14 +201,57 @@ class KioskController extends StateNotifier<KioskState> {
     return h.sublist(h.length - _maxHistoryTurns);
   }
 
+  /// Starts the confirm step: speaks a summary built directly from the
+  /// structured order (never from LLM text, so it can't disagree with what's
+  /// on screen) and waits for an explicit yes/no — see [confirmOrder] and
+  /// [cancelOrderReview].
+  void beginOrderReview() {
+    if (state.order.isEmpty || state.isReviewingOrder) return;
+    state = state.copyWith(isReviewingOrder: true);
+    unawaited(_tts.speak(buildOrderConfirmationSpeech(state.order, _menu)));
+  }
+
+  /// Customer said "no" / tapped "keep editing" — back to normal ordering,
+  /// order state untouched.
+  void cancelOrderReview() {
+    if (!state.isReviewingOrder) return;
+    state = state.copyWith(isReviewingOrder: false);
+  }
+
+  /// Customer said "yes" / tapped "confirm" — only now does the order
+  /// actually become final.
   void confirmOrder() {
-    state = state.copyWith(order: state.order.copyWith(status: OrderStatus.confirmed));
+    state = state.copyWith(
+      order: state.order.copyWith(status: OrderStatus.confirmed),
+      isReviewingOrder: false,
+    );
+    unawaited(_tts.speak("Great, that's confirmed! We'll get started on it right away."));
   }
 
   void resetOrder() {
     state = const KioskState();
   }
 }
+
+/// What the customer should understand is happening right now, combining
+/// the conversational state above with TTS playback state — the UI's single
+/// source of truth for the Listening/Thinking/Speaking indicator.
+enum KioskPhase { idle, listening, thinking, speaking }
+
+final kioskPhaseProvider = Provider<KioskPhase>((ref) {
+  final listeningStatus = ref.watch(kioskControllerProvider).listeningStatus;
+  if (listeningStatus == ListeningStatus.listening) return KioskPhase.listening;
+  if (listeningStatus == ListeningStatus.thinking) return KioskPhase.thinking;
+
+  final ttsStatus = ref.watch(ttsPlaybackControllerProvider).status;
+  if (ttsStatus == TtsPlaybackStatus.speaking ||
+      ttsStatus == TtsPlaybackStatus.loading ||
+      ttsStatus == TtsPlaybackStatus.blocked) {
+    return KioskPhase.speaking;
+  }
+
+  return KioskPhase.idle;
+});
 
 /// Only ever mounted by KioskScreen once a café is selected and its menu has
 /// loaded (see _KioskBody) — cafeId/menu here reflect whatever was current
@@ -174,6 +265,7 @@ final kioskControllerProvider =
   return KioskController(
     ref.watch(speechServiceProvider),
     ref.watch(orderAgentServiceProvider),
+    ref.watch(ttsPlaybackControllerProvider.notifier),
     menu,
     cafeId,
   );

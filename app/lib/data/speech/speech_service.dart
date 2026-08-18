@@ -25,7 +25,16 @@ class SpeechService {
   Future<void> startListening({
     required void Function(String text, bool isFinal) onResult,
     Duration listenFor = const Duration(seconds: 12),
-    Duration pauseFor = const Duration(seconds: 3),
+    // How long the recognizer waits in silence before treating the
+    // utterance as finished and firing `isFinal`. This is dead air stacked
+    // directly on top of the backend round-trip, so it's a hard floor on
+    // perceived response time — but too short risks firing `isFinal` on a
+    // customer's mid-sentence pause (e.g. "I'd like a... large latte"),
+    // splitting one utterance into two turns. 1.3s is short enough to feel
+    // responsive while still covering typical word-finding pauses; tune
+    // down further only after checking real order transcripts for clipped
+    // utterances.
+    Duration pauseFor = const Duration(milliseconds: 1300),
   }) async {
     await _speech.listen(
       onResult: (result) {

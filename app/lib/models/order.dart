@@ -18,6 +18,7 @@ class OrderItem {
   final String? temperature;
   final bool decaf;
   final List<String> modifiers;
+  final String? specialRequest;
 
   OrderItem({
     String? id,
@@ -29,6 +30,7 @@ class OrderItem {
     this.temperature,
     this.decaf = false,
     this.modifiers = const [],
+    this.specialRequest,
   }) : id = id ?? _uuid.v4();
 
   OrderItem copyWith({
@@ -38,6 +40,7 @@ class OrderItem {
     String? temperature,
     bool? decaf,
     List<String>? modifiers,
+    String? specialRequest,
   }) {
     return OrderItem(
       id: id,
@@ -49,6 +52,7 @@ class OrderItem {
       temperature: temperature ?? this.temperature,
       decaf: decaf ?? this.decaf,
       modifiers: modifiers ?? this.modifiers,
+      specialRequest: specialRequest ?? this.specialRequest,
     );
   }
 
@@ -84,6 +88,7 @@ class OrderItem {
         'temperature': temperature,
         'decaf': decaf,
         'modifiers': modifiers,
+        'specialRequest': specialRequest,
       };
 
   factory OrderItem.fromJson(Map<String, dynamic> json) => OrderItem(
@@ -97,6 +102,7 @@ class OrderItem {
         decaf: json['decaf'] as bool? ?? false,
         modifiers:
             (json['modifiers'] as List<dynamic>? ?? []).map((e) => e as String).toList(),
+        specialRequest: json['specialRequest'] as String?,
       );
 }
 

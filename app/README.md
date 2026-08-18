@@ -1,4 +1,4 @@
-# barista_voice
+# BaristaVoice
 
 A new Flutter project.
 

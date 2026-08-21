@@ -3,11 +3,16 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/admin/admin_models.dart';
 import '../data/admin/cafe_admin_repository.dart';
+import '../data/admin/pos_mapping_repository.dart';
 import '../data/auth/profile.dart';
 import 'auth_providers.dart';
 
 final cafeAdminRepositoryProvider = Provider<CafeAdminRepository>((ref) {
   return CafeAdminRepository(Supabase.instance.client);
+});
+
+final posMappingRepositoryProvider = Provider<PosMappingRepository>((ref) {
+  return PosMappingRepository(Supabase.instance.client);
 });
 
 /// The cafe currently being managed. For a cafe_admin this is always their

@@ -661,6 +661,17 @@ create trigger set_pos_product_mappings_updated_at
 -- one café to a POS connection belonging to another café, even from
 -- trusted server-side code with a bug — RLS alone only checks the *caller*,
 -- not that the two referenced rows agree with each other.
+--
+-- Also guarantees pos_product_id actually belongs to pos_connection_id.
+-- pos_product_id is a bare FK to pos_products(id) — any row, from any
+-- café's connection — so without this check, a cafe_admin who legitimately
+-- owns pos_connection_id (passing the café-match check above) could still
+-- create a mapping whose pos_product_id points at a product belonging to a
+-- DIFFERENT café's connection, given that product's id. That's an invalid
+-- mapping the same way a cross-cafe one is, and it can only be caught here
+-- — it depends on cross-referencing two other tables, which is exactly what
+-- a row-level trigger (not RLS, which only ever sees this table's own row)
+-- is for.
 create or replace function public.check_pos_product_mapping_cafe_match()
 returns trigger
 language plpgsql
@@ -668,12 +679,26 @@ as $$
 declare
   menu_item_cafe uuid;
   connection_cafe uuid;
+  product_connection uuid;
 begin
   select cafe_id into menu_item_cafe from menu_items where id = new.menu_item_id;
   select cafe_id into connection_cafe from pos_connections where id = new.pos_connection_id;
   if menu_item_cafe is null or connection_cafe is null or menu_item_cafe <> connection_cafe then
     raise exception 'pos_product_mappings: menu_item_id and pos_connection_id must belong to the same cafe';
   end if;
+
+  -- Deliberately NOT "or product_connection is null" here: a pos_product_id
+  -- that doesn't exist at all should surface as the normal foreign-key
+  -- violation from the pos_product_id FK below (a "the product you
+  -- referenced doesn't exist" error), not be relabeled as this "exists but
+  -- belongs to the wrong connection" error — those are different problems
+  -- (missing POS product vs. invalid/cross-connection mapping) and callers
+  -- need to tell them apart.
+  select pos_connection_id into product_connection from pos_products where id = new.pos_product_id;
+  if product_connection is not null and product_connection <> new.pos_connection_id then
+    raise exception 'pos_product_mappings: pos_product_id must belong to pos_connection_id';
+  end if;
+
   return new;
 end;
 $$;
@@ -960,20 +985,36 @@ insert into cafes (name, slug, description)
 values ('Demo Café', 'demo', 'Try the AI ordering assistant with a sample menu.')
 on conflict (slug) do nothing;
 
+-- IMPORTANT: every other writer of menu_items (CafeAdminRepository.addProduct,
+-- the menu-extractor Edge Function) keeps the row's `id` column and its
+-- embedded `data->>'id'` equal — order-agent and the client's OrderItem both
+-- address menu items by the jsonb-embedded id, so anything that resolves
+-- order_items.menu_item_id (a real FK to this table's uuid PK) depends on
+-- that invariant holding. This seed used to violate it (jsonb ids were
+-- human-readable slugs like "latte" while the `id` column got its own
+-- unrelated uuid_generate_v4() default) — fixed by generating one uuid per
+-- item up front and writing it into both places, exactly like the other two
+-- writers already do.
 do $$
 declare
   demo_cafe_id uuid;
+  latte_id uuid := uuid_generate_v4();
+  cold_brew_id uuid := uuid_generate_v4();
+  cappuccino_id uuid := uuid_generate_v4();
+  chai_latte_id uuid := uuid_generate_v4();
+  chocolate_croissant_id uuid := uuid_generate_v4();
+  blueberry_muffin_id uuid := uuid_generate_v4();
 begin
   select id into demo_cafe_id from cafes where slug = 'demo';
 
   if demo_cafe_id is not null and not exists (select 1 from menu_items where cafe_id = demo_cafe_id) then
-    insert into menu_items (cafe_id, status, data) values
-      (demo_cafe_id, 'published', '{"id":"latte","name":"Latte","description":"Espresso with steamed milk and a thin layer of foam.","category":"Espresso Drinks","basePrice":4.25,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6},{"name":"Almond","priceDelta":0.6},{"name":"Skim","priceDelta":0}],"temperatureOptions":["hot","iced"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75},{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":[]}'::jsonb),
-      (demo_cafe_id, 'published', '{"id":"cold_brew","name":"Cold Brew","description":"Slow-steeped for 18 hours, smooth and naturally low-acid. Not too sweet.","category":"Cold Drinks","basePrice":4.0,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Medium","priceDelta":0},{"name":"Large","priceDelta":0.75}],"milkOptions":[{"name":"None","priceDelta":0},{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["iced"],"decafAvailable":false,"modifiers":[{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":["dairy-free option"]}'::jsonb),
-      (demo_cafe_id, 'published', '{"id":"cappuccino","name":"Cappuccino","description":"Equal parts espresso, steamed milk, and thick milk foam.","category":"Espresso Drinks","basePrice":4.0,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75}],"allergens":[],"dietaryTags":[]}'::jsonb),
-      (demo_cafe_id, 'published', '{"id":"chai_latte","name":"Chai Latte","description":"Spiced black tea concentrate with steamed milk.","category":"Tea","basePrice":4.25,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot","iced"],"decafAvailable":false,"modifiers":[],"allergens":[],"dietaryTags":[]}'::jsonb),
-      (demo_cafe_id, 'published', '{"id":"chocolate_croissant","name":"Chocolate Croissant","description":"Buttery, flaky croissant filled with dark chocolate.","category":"Bakery","basePrice":3.75,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb),
-      (demo_cafe_id, 'published', '{"id":"blueberry_muffin","name":"Blueberry Muffin","description":"Moist muffin loaded with blueberries.","category":"Bakery","basePrice":3.5,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb);
+    insert into menu_items (id, cafe_id, status, data) values
+      (latte_id, demo_cafe_id, 'published', ('{"id":"latte","name":"Latte","description":"Espresso with steamed milk and a thin layer of foam.","category":"Espresso Drinks","basePrice":4.25,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6},{"name":"Almond","priceDelta":0.6},{"name":"Skim","priceDelta":0}],"temperatureOptions":["hot","iced"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75},{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":[]}'::jsonb) || jsonb_build_object('id', latte_id::text)),
+      (cold_brew_id, demo_cafe_id, 'published', ('{"id":"cold_brew","name":"Cold Brew","description":"Slow-steeped for 18 hours, smooth and naturally low-acid. Not too sweet.","category":"Cold Drinks","basePrice":4.0,"popular":true,"available":true,"imageUrl":null,"sizes":[{"name":"Medium","priceDelta":0},{"name":"Large","priceDelta":0.75}],"milkOptions":[{"name":"None","priceDelta":0},{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["iced"],"decafAvailable":false,"modifiers":[{"name":"Vanilla Syrup","priceDelta":0.5}],"allergens":[],"dietaryTags":["dairy-free option"]}'::jsonb) || jsonb_build_object('id', cold_brew_id::text)),
+      (cappuccino_id, demo_cafe_id, 'published', ('{"id":"cappuccino","name":"Cappuccino","description":"Equal parts espresso, steamed milk, and thick milk foam.","category":"Espresso Drinks","basePrice":4.0,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot"],"decafAvailable":true,"modifiers":[{"name":"Extra Shot","priceDelta":0.75}],"allergens":[],"dietaryTags":[]}'::jsonb) || jsonb_build_object('id', cappuccino_id::text)),
+      (chai_latte_id, demo_cafe_id, 'published', ('{"id":"chai_latte","name":"Chai Latte","description":"Spiced black tea concentrate with steamed milk.","category":"Tea","basePrice":4.25,"popular":false,"available":true,"imageUrl":null,"sizes":[{"name":"Small","priceDelta":0},{"name":"Medium","priceDelta":0.5},{"name":"Large","priceDelta":1.0}],"milkOptions":[{"name":"Whole","priceDelta":0},{"name":"Oat","priceDelta":0.6}],"temperatureOptions":["hot","iced"],"decafAvailable":false,"modifiers":[],"allergens":[],"dietaryTags":[]}'::jsonb) || jsonb_build_object('id', chai_latte_id::text)),
+      (chocolate_croissant_id, demo_cafe_id, 'published', ('{"id":"chocolate_croissant","name":"Chocolate Croissant","description":"Buttery, flaky croissant filled with dark chocolate.","category":"Bakery","basePrice":3.75,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb) || jsonb_build_object('id', chocolate_croissant_id::text)),
+      (blueberry_muffin_id, demo_cafe_id, 'published', ('{"id":"blueberry_muffin","name":"Blueberry Muffin","description":"Moist muffin loaded with blueberries.","category":"Bakery","basePrice":3.5,"popular":false,"available":true,"imageUrl":null,"sizes":[],"milkOptions":[],"temperatureOptions":[],"decafAvailable":false,"modifiers":[],"allergens":["gluten","dairy","egg"],"dietaryTags":["vegetarian"]}'::jsonb) || jsonb_build_object('id', blueberry_muffin_id::text));
   end if;
 end $$;
 

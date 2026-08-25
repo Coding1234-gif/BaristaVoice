@@ -17,6 +17,7 @@ class OrderSummaryPanel extends StatelessWidget {
   final Order order;
   final CafeMenu menu;
   final bool isReviewing;
+  final bool isSubmitting;
   final VoidCallback onReview;
   final VoidCallback onConfirmYes;
   final VoidCallback onConfirmNo;
@@ -26,6 +27,7 @@ class OrderSummaryPanel extends StatelessWidget {
     required this.order,
     required this.menu,
     required this.isReviewing,
+    this.isSubmitting = false,
     required this.onReview,
     required this.onConfirmYes,
     required this.onConfirmNo,
@@ -167,7 +169,7 @@ class OrderSummaryPanel extends StatelessWidget {
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: onConfirmNo,
+                    onPressed: isSubmitting ? null : onConfirmNo,
                     style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
                     child: const Text('No, keep editing'),
                   ),
@@ -175,9 +177,15 @@ class OrderSummaryPanel extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: FilledButton(
-                    onPressed: onConfirmYes,
+                    onPressed: isSubmitting ? null : onConfirmYes,
                     style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-                    child: const Text('Yes, confirm'),
+                    child: isSubmitting
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Yes, confirm'),
                   ),
                 ),
               ],

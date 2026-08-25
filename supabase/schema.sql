@@ -855,6 +855,239 @@ create table order_item_modifiers (
 create index idx_order_item_modifiers_order_item_id on order_item_modifiers (order_item_id);
 create index idx_order_item_modifiers_pos_modifier_id on order_item_modifiers (pos_modifier_id) where pos_modifier_id is not null;
 
+-- ---------------------------------------------------------------------------
+-- create_canonical_order — the ONLY way an `orders` row (with its
+-- order_items/order_item_modifiers) gets created. Called exclusively by the
+-- `create-order` Edge Function via a service-role client; never reachable by
+-- the Flutter client directly (see revoke below) — the client is untrusted
+-- input, this function is where that input becomes real money and a real
+-- order, so it is deliberately the single place that decides both.
+--
+-- Security posture, matching every other privileged write in this file:
+--   - menu_item_id is resolved against menu_items scoped to BOTH the given
+--     cafe_id AND status = 'published' — a stale, cross-cafe, draft, or
+--     nonexistent item id all fail the same lookup and are rejected the same
+--     way (no distinct error leaks which case it was).
+--   - size/milk/temperature/decaf/modifiers are validated against that same
+--     menu_items row's own `data` jsonb — never against anything the caller
+--     asserts. An option not literally present on the item is rejected
+--     outright (not silently dropped): this runs at the customer's final
+--     "confirm" tap, not a speculative LLM turn, so a stale/tampered
+--     selection must surface as an error, not a silently different order.
+--   - EVERY price (unit_price, each modifier's price_adjustment, the order
+--     total) is computed here from menu_items.data, in the same transaction
+--     as the writes that use it. The caller never supplies a price for
+--     anything, and nothing here ever reads one even if a caller tried to
+--     smuggle one in (payload items simply have no price field in the
+--     contract this function reads).
+--   - Idempotency: a payload whose idempotency_key already exists on an
+--     `orders` row returns that row's (id, status, total) immediately —
+--     no re-validation, no second write. A concurrent duplicate insert
+--     (two requests racing on a brand-new key) is caught as a
+--     unique_violation on orders_idempotency_key_key and resolved the same
+--     way, so retries are safe under real concurrency, not just sequentially.
+--   - Atomicity: this whole function body executes as the one transaction
+--     backing its single top-level call — any exception (validation
+--     failure, a bad cast, a unique/foreign-key violation not already
+--     handled above) rolls back every insert made so far in this call. An
+--     order is never left half-written.
+-- ---------------------------------------------------------------------------
+create or replace function public.create_canonical_order(payload jsonb)
+returns table (order_id uuid, status text, total numeric)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_cafe_id uuid;
+  v_idempotency_key text := payload->>'idempotency_key';
+  v_source text := coalesce(payload->>'source', 'voice');
+  v_currency text := coalesce(payload->>'currency', 'USD');
+  v_items jsonb := payload->'items';
+  v_order_id uuid;
+  v_total numeric(12, 2) := 0;
+  -- Dedicated to the two idempotency-short-circuit lookups below, kept
+  -- separate from v_order_id/v_total: a `select ... into` that matches ZERO
+  -- rows sets ALL of its target variables to NULL (a classic PL/pgSQL
+  -- gotcha) — sharing variables with the real working state would silently
+  -- null out v_total's `:= 0` default on the normal, no-existing-row path
+  -- and blow up the final `update orders set total = ...` below.
+  v_existing_order_id uuid;
+  v_existing_status text;
+  v_existing_total numeric(12, 2);
+  v_item jsonb;
+  v_item_data jsonb;
+  v_menu_item_id uuid;
+  v_quantity int;
+  v_size text;
+  v_milk text;
+  v_temperature text;
+  v_decaf boolean;
+  v_special_request text;
+  v_size_delta numeric(12, 2);
+  v_milk_delta numeric(12, 2);
+  v_unit_price numeric(12, 2);
+  v_order_item_id uuid;
+  v_modifier_name text;
+  v_modifier_delta numeric(12, 2);
+  v_line_total numeric(12, 2);
+begin
+  if v_idempotency_key is null or trim(v_idempotency_key) = '' then
+    raise exception 'idempotency_key is required.';
+  end if;
+
+  -- Idempotent short-circuit: a retry of an already-created order (same
+  -- key) returns the existing row rather than re-validating or re-writing.
+  select o.id, o.status, o.total into v_existing_order_id, v_existing_status, v_existing_total
+    from orders o where o.idempotency_key = v_idempotency_key;
+  if found then
+    return query select v_existing_order_id, v_existing_status, v_existing_total;
+    return;
+  end if;
+
+  begin
+    v_cafe_id := (payload->>'cafe_id')::uuid;
+  exception when others then
+    raise exception 'A valid cafe_id is required.';
+  end;
+
+  if not exists (select 1 from cafes c where c.id = v_cafe_id) then
+    raise exception 'Unknown cafe.';
+  end if;
+
+  if v_items is null or jsonb_typeof(v_items) <> 'array' or jsonb_array_length(v_items) = 0 then
+    raise exception 'Order has no items.';
+  end if;
+
+  begin
+    insert into orders (cafe_id, status, source, total, currency, idempotency_key)
+      values (v_cafe_id, 'confirmed', v_source, 0, v_currency, v_idempotency_key)
+      returning id into v_order_id;
+  exception
+    when unique_violation then
+      -- Lost a concurrent race on the same brand-new idempotency_key —
+      -- another call already created this order; return its result instead
+      -- of creating (or erroring on) a second one.
+      select o.id, o.status, o.total into v_existing_order_id, v_existing_status, v_existing_total
+        from orders o where o.idempotency_key = v_idempotency_key;
+      return query select v_existing_order_id, v_existing_status, v_existing_total;
+      return;
+  end;
+
+  for v_item in select * from jsonb_array_elements(v_items) loop
+    v_item_data := null;
+
+    begin
+      v_menu_item_id := (v_item->>'menuItemId')::uuid;
+    exception when others then
+      raise exception 'Invalid or missing menu item.';
+    end;
+
+    select mi.data into v_item_data
+      from menu_items mi
+      where mi.id = v_menu_item_id and mi.cafe_id = v_cafe_id and mi.status = 'published';
+    if not found or v_item_data is null or (v_item_data->>'available') = 'false' then
+      raise exception 'Menu item is unavailable or does not exist.';
+    end if;
+
+    begin
+      v_quantity := (v_item->>'quantity')::int;
+    exception when others then
+      v_quantity := null;
+    end;
+    if v_quantity is null or v_quantity < 1 or v_quantity > 50 then
+      raise exception 'Invalid quantity for "%".', v_item_data->>'name';
+    end if;
+
+    v_size := nullif(trim(coalesce(v_item->>'size', '')), '');
+    v_size_delta := 0;
+    if v_size is not null then
+      select (elem->>'priceDelta')::numeric into v_size_delta
+        from jsonb_array_elements(coalesce(v_item_data->'sizes', '[]'::jsonb)) elem
+        where elem->>'name' = v_size;
+      if not found then
+        raise exception 'Invalid size "%" for "%".', v_size, v_item_data->>'name';
+      end if;
+    end if;
+
+    v_milk := nullif(trim(coalesce(v_item->>'milk', '')), '');
+    v_milk_delta := 0;
+    if v_milk is not null then
+      select (elem->>'priceDelta')::numeric into v_milk_delta
+        from jsonb_array_elements(coalesce(v_item_data->'milkOptions', '[]'::jsonb)) elem
+        where elem->>'name' = v_milk;
+      if not found then
+        raise exception 'Invalid milk option "%" for "%".', v_milk, v_item_data->>'name';
+      end if;
+    end if;
+
+    v_temperature := nullif(trim(coalesce(v_item->>'temperature', '')), '');
+    if v_temperature is not null
+        and not exists (
+          select 1 from jsonb_array_elements_text(coalesce(v_item_data->'temperatureOptions', '[]'::jsonb)) t
+          where t = v_temperature
+        ) then
+      raise exception 'Invalid temperature "%" for "%".', v_temperature, v_item_data->>'name';
+    end if;
+
+    v_decaf := coalesce((v_item->>'decaf')::boolean, false);
+    if v_decaf and coalesce((v_item_data->>'decafAvailable')::boolean, false) is not true then
+      raise exception 'Decaf is not available for "%".', v_item_data->>'name';
+    end if;
+
+    v_special_request := nullif(trim(coalesce(v_item->>'specialRequest', '')), '');
+    if v_special_request is not null then
+      v_special_request := left(v_special_request, 140);
+    end if;
+
+    v_unit_price := (v_item_data->>'basePrice')::numeric + v_size_delta + v_milk_delta;
+    v_line_total := v_unit_price * v_quantity;
+
+    insert into order_items (order_id, menu_item_id, name, quantity, unit_price, metadata)
+      values (
+        v_order_id,
+        v_menu_item_id,
+        v_item_data->>'name',
+        v_quantity,
+        v_unit_price,
+        jsonb_build_object(
+          'size', v_size,
+          'milk', v_milk,
+          'temperature', v_temperature,
+          'decaf', v_decaf,
+          'specialRequest', v_special_request
+        )
+      )
+      returning id into v_order_item_id;
+
+    for v_modifier_name in select * from jsonb_array_elements_text(coalesce(v_item->'modifiers', '[]'::jsonb)) loop
+      select (elem->>'priceDelta')::numeric into v_modifier_delta
+        from jsonb_array_elements(coalesce(v_item_data->'modifiers', '[]'::jsonb)) elem
+        where elem->>'name' = v_modifier_name;
+      if not found then
+        raise exception 'Invalid modifier "%" for "%".', v_modifier_name, v_item_data->>'name';
+      end if;
+
+      insert into order_item_modifiers (order_item_id, name, price_adjustment)
+        values (v_order_item_id, v_modifier_name, v_modifier_delta);
+
+      v_line_total := v_line_total + (v_modifier_delta * v_quantity);
+    end loop;
+
+    v_total := v_total + v_line_total;
+  end loop;
+
+  update orders set total = v_total where id = v_order_id;
+
+  return query select v_order_id, 'confirmed'::text, v_total;
+end;
+$$;
+
+comment on function public.create_canonical_order(jsonb) is
+  'Sole authority for creating a canonical order: validates every item/option against menu_items and computes every price itself, never trusting the caller for either. Atomic (one transaction per call) and idempotent on payload->>''idempotency_key''. Callable only by service_role — see the revoke below.';
+
+revoke all on function public.create_canonical_order(jsonb) from public;
+
 -- Realtime for the (future) staff order dashboard — same tables/intent as
 -- the original placeholder schema, carried over onto the new shape. Always
 -- safe here since orders/order_items were just dropped and recreated above

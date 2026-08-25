@@ -15,6 +15,25 @@ String buildOrderConfirmationSpeech(Order order, CafeMenu menu) {
   return "Just to confirm: $items. Your total is $total. Is that correct?";
 }
 
+/// What to speak once the server has actually finished creating the order —
+/// never before, and never claiming more than the backend reported.
+/// [posStatus] is whatever `pos-square-order-submit` returned (via
+/// `OrderSubmissionResult.posStatus`); only `'sent_to_pos'` means the order
+/// genuinely reached the café's POS. Every other value — `pos_failed`, no
+/// connection, or null — still means the order itself is safely confirmed
+/// and persisted, so this never says anything false, just less specific.
+String buildOrderConfirmedSpeech(String? posStatus) {
+  if (posStatus == 'sent_to_pos') {
+    return "Great, that's confirmed and sent to the kitchen! We'll get started on it right away.";
+  }
+  return "Great, that's confirmed! We'll get started on it right away.";
+}
+
+/// Spoken (and shown) when the server-side confirm call itself fails — the
+/// order was NOT created, so this must never sound like a success.
+const String orderConfirmationFailedSpeech =
+    "Sorry, something went wrong confirming your order. Please try again.";
+
 String _describeItem(OrderItem item) {
   final options = <String>[];
   if (item.size != null) options.add(item.size!);

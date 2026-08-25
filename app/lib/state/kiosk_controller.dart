@@ -2,16 +2,20 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 
 import '../data/agent/conversation_turn.dart';
 import '../data/agent/order_agent_service.dart';
 import '../data/agent/order_confirmation_speech.dart';
+import '../data/order/order_submission_service.dart';
 import '../data/speech/speech_service.dart';
 import '../models/menu.dart';
 import '../models/order.dart';
 import 'cafe_providers.dart';
 import 'providers.dart';
 import 'tts_playback_controller.dart';
+
+const _uuid = Uuid();
 
 enum ListeningStatus { idle, listening, thinking }
 
@@ -33,6 +37,25 @@ class KioskState {
   /// spoken/shown and the customer hasn't said yes/no to it yet.
   final bool isReviewingOrder;
 
+  /// True from the moment "Yes, confirm" is tapped until the server-side
+  /// create-order call (see [KioskController.confirmOrder]) resolves either
+  /// way. Drives the confirm button's loading state and blocks a second,
+  /// overlapping submit.
+  final bool isSubmittingOrder;
+
+  /// Set once the server has actually created the canonical order. Null
+  /// beforehand and on failure — this is the one thing in [KioskState] that
+  /// reflects real backend state rather than optimistic local state.
+  final String? confirmedOrderId;
+
+  /// Generated the first time [KioskController.confirmOrder] is called for
+  /// the current order and reused on every retry of that same confirm
+  /// attempt, so a retry after a dropped/timed-out response is safe — the
+  /// server's idempotency_key handling (see create_canonical_order() in
+  /// schema.sql) turns a retry into "return the order already created"
+  /// rather than a duplicate.
+  final String? pendingIdempotencyKey;
+
   const KioskState({
     this.listeningStatus = ListeningStatus.idle,
     this.liveTranscript = '',
@@ -42,6 +65,9 @@ class KioskState {
     this.errorMessage,
     this.audioUnlocked = false,
     this.isReviewingOrder = false,
+    this.isSubmittingOrder = false,
+    this.confirmedOrderId,
+    this.pendingIdempotencyKey,
   });
 
   KioskState copyWith({
@@ -54,6 +80,9 @@ class KioskState {
     bool clearError = false,
     bool? audioUnlocked,
     bool? isReviewingOrder,
+    bool? isSubmittingOrder,
+    String? confirmedOrderId,
+    String? pendingIdempotencyKey,
   }) {
     return KioskState(
       listeningStatus: listeningStatus ?? this.listeningStatus,
@@ -64,6 +93,9 @@ class KioskState {
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       audioUnlocked: audioUnlocked ?? this.audioUnlocked,
       isReviewingOrder: isReviewingOrder ?? this.isReviewingOrder,
+      isSubmittingOrder: isSubmittingOrder ?? this.isSubmittingOrder,
+      confirmedOrderId: confirmedOrderId ?? this.confirmedOrderId,
+      pendingIdempotencyKey: pendingIdempotencyKey ?? this.pendingIdempotencyKey,
     );
   }
 }
@@ -81,13 +113,20 @@ class KioskController extends StateNotifier<KioskState> {
   final SpeechService _speech;
   final OrderAgentService _agent;
   final TtsPlaybackController _tts;
+  final OrderSubmissionService _orderSubmission;
   final CafeMenu _menu;
   final String _cafeId;
 
   static const int _maxHistoryTurns = 12;
 
-  KioskController(this._speech, this._agent, this._tts, this._menu, this._cafeId)
-      : super(const KioskState());
+  KioskController(
+    this._speech,
+    this._agent,
+    this._tts,
+    this._orderSubmission,
+    this._menu,
+    this._cafeId,
+  ) : super(const KioskState());
 
   /// Spends the "Start Order" tap's user gesture on unlocking audio
   /// playback (see `TtsPlaybackController.unlockAudio`), then reveals the
@@ -218,14 +257,49 @@ class KioskController extends StateNotifier<KioskState> {
     state = state.copyWith(isReviewingOrder: false);
   }
 
-  /// Customer said "yes" / tapped "confirm" — only now does the order
-  /// actually become final.
-  void confirmOrder() {
+  /// Customer said "yes" / tapped "confirm" — creates the canonical order
+  /// server-side (validated and priced entirely from the database's own
+  /// menu data, never from anything this client sends — see
+  /// create_canonical_order() in schema.sql) and, if that succeeds, the
+  /// server automatically attempts POS submission. Only a server response
+  /// makes the order final; nothing here is optimistic. Safe to call again
+  /// after a failure — the same idempotency key is reused, so a retry can
+  /// never create a duplicate order.
+  Future<void> confirmOrder() async {
+    if (state.order.isEmpty || state.isSubmittingOrder) return;
+
+    final idempotencyKey = state.pendingIdempotencyKey ?? _uuid.v4();
     state = state.copyWith(
-      order: state.order.copyWith(status: OrderStatus.confirmed),
-      isReviewingOrder: false,
+      isSubmittingOrder: true,
+      pendingIdempotencyKey: idempotencyKey,
+      clearError: true,
     );
-    unawaited(_tts.speak("Great, that's confirmed! We'll get started on it right away."));
+
+    try {
+      final result = await _orderSubmission.submitOrder(
+        cafeId: _cafeId,
+        idempotencyKey: idempotencyKey,
+        order: state.order,
+      );
+
+      state = state.copyWith(
+        order: state.order.copyWith(status: OrderStatus.confirmed),
+        isReviewingOrder: false,
+        isSubmittingOrder: false,
+        confirmedOrderId: result.orderId,
+      );
+      unawaited(_tts.speak(buildOrderConfirmedSpeech(result.posStatus)));
+    } catch (_) {
+      // The order was NOT created — leave the order itself untouched (still
+      // editable) so the customer can simply tap confirm again, reusing the
+      // same idempotency key above.
+      state = state.copyWith(
+        isSubmittingOrder: false,
+        isReviewingOrder: false,
+        errorMessage: orderConfirmationFailedSpeech,
+      );
+      unawaited(_tts.speak(orderConfirmationFailedSpeech));
+    }
   }
 
   void resetOrder() {
@@ -266,6 +340,7 @@ final kioskControllerProvider =
     ref.watch(speechServiceProvider),
     ref.watch(orderAgentServiceProvider),
     ref.watch(ttsPlaybackControllerProvider.notifier),
+    ref.watch(orderSubmissionServiceProvider),
     menu,
     cafeId,
   );

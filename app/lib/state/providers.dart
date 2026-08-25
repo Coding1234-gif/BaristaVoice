@@ -6,6 +6,9 @@ import '../data/agent/llm_order_agent_service.dart';
 import '../data/agent/order_agent_service.dart';
 import '../data/menu/menu_repository.dart';
 import '../data/menu/supabase_menu_repository.dart';
+import '../data/order/edge_function_order_submission_service.dart';
+import '../data/order/order_submission_service.dart';
+import '../data/order/order_submission_transport.dart';
 import '../data/speech/speech_service.dart';
 import '../data/tts/elevenlabs_tts_service.dart';
 import '../data/tts/tts_service.dart';
@@ -36,6 +39,21 @@ final orderAgentServiceProvider = Provider<OrderAgentService>((ref) {
     );
   }
   return LlmOrderAgentService(Supabase.instance.client);
+});
+
+/// Creates the canonical order (and, server-side, submits it to the café's
+/// POS) when the customer confirms — see `create-order` and
+/// `create_canonical_order()` in schema.sql.
+final orderSubmissionServiceProvider = Provider<OrderSubmissionService>((ref) {
+  if (!Env.isSupabaseConfigured) {
+    throw StateError(
+      'Supabase is not configured yet. Add SUPABASE_URL and SUPABASE_ANON_KEY '
+      'to app/.env — see .env.example.',
+    );
+  }
+  return EdgeFunctionOrderSubmissionService(
+    SupabaseOrderSubmissionTransport(Supabase.instance.client),
+  );
 });
 
 final speechServiceProvider = Provider<SpeechService>((ref) => SpeechService());

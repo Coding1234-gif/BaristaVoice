@@ -435,6 +435,7 @@ class _KioskBody extends ConsumerWidget {
           order: kioskState.order,
           menu: menu,
           isReviewing: kioskState.isReviewingOrder,
+          isSubmitting: kioskState.isSubmittingOrder,
           onReview: controller.beginOrderReview,
           onConfirmYes: controller.confirmOrder,
           onConfirmNo: controller.cancelOrderReview,

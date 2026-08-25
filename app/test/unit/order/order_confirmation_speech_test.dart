@@ -90,4 +90,35 @@ void main() {
     expect(speech, startsWith('Just to confirm: Cappuccino with Large, Chocolate Croissant.'));
     expect(speech, endsWith('Is that correct?'));
   });
+
+  group('buildOrderConfirmedSpeech', () {
+    test('claims the order reached the kitchen only when posStatus is sent_to_pos', () {
+      final speech = buildOrderConfirmedSpeech('sent_to_pos');
+      expect(speech, contains('sent to the kitchen'));
+    });
+
+    test('does not claim POS success when posStatus is pos_failed', () {
+      final speech = buildOrderConfirmedSpeech('pos_failed');
+      expect(speech, isNot(contains('kitchen')));
+      expect(speech, contains("that's confirmed"));
+    });
+
+    test('does not claim POS success when posStatus is null (no POS connection attempted)', () {
+      final speech = buildOrderConfirmedSpeech(null);
+      expect(speech, isNot(contains('kitchen')));
+      expect(speech, contains("that's confirmed"));
+    });
+
+    test('does not claim POS success for any status other than sent_to_pos', () {
+      for (final status in ['confirmed', 'sending_to_pos', 'unknown', '']) {
+        final speech = buildOrderConfirmedSpeech(status);
+        expect(speech, isNot(contains('kitchen')), reason: 'status "$status" must not claim POS success');
+      }
+    });
+  });
+
+  test('orderConfirmationFailedSpeech never sounds like a success', () {
+    expect(orderConfirmationFailedSpeech.toLowerCase(), isNot(contains('confirmed')));
+    expect(orderConfirmationFailedSpeech.toLowerCase(), contains('wrong'));
+  });
 }

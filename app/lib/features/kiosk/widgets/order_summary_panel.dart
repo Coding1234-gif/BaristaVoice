@@ -3,6 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../../../models/menu.dart';
 import '../../../models/order.dart';
+import '../../../state/kiosk_controller.dart' show PaymentPhase;
 
 final _currency = NumberFormat.simpleCurrency(name: 'USD');
 
@@ -12,15 +13,22 @@ final _currency = NumberFormat.simpleCurrency(name: 'USD');
 /// Confirmation is a deliberate two-step: tapping the button below starts a
 /// *review* (spoken + shown here, built directly from this same [order] so
 /// it can never disagree with what's on screen) rather than immediately
-/// finalizing — see `KioskController.beginOrderReview`/`confirmOrder`.
+/// finalizing — see `KioskController.beginOrderReview`/`confirmOrder`. Once
+/// confirmed, [paymentPhase] takes over the bottom action area entirely —
+/// see `KioskController._beginPayment`/`_startPollingForPayment` for what
+/// drives each phase.
 class OrderSummaryPanel extends StatelessWidget {
   final Order order;
   final CafeMenu menu;
   final bool isReviewing;
   final bool isSubmitting;
+  final PaymentPhase paymentPhase;
+  final String? paymentError;
   final VoidCallback onReview;
   final VoidCallback onConfirmYes;
   final VoidCallback onConfirmNo;
+  final VoidCallback onRetryPayment;
+  final VoidCallback onNewOrder;
 
   const OrderSummaryPanel({
     super.key,
@@ -28,9 +36,13 @@ class OrderSummaryPanel extends StatelessWidget {
     required this.menu,
     required this.isReviewing,
     this.isSubmitting = false,
+    this.paymentPhase = PaymentPhase.none,
+    this.paymentError,
     required this.onReview,
     required this.onConfirmYes,
     required this.onConfirmNo,
+    required this.onRetryPayment,
+    required this.onNewOrder,
   });
 
   String _optionsLine(OrderItem item) {
@@ -68,7 +80,7 @@ class OrderSummaryPanel extends StatelessWidget {
           Row(
             children: [
               Text('Your Order', style: theme.textTheme.titleMedium),
-              if (!order.isEmpty && !isReviewing) ...[
+              if (!order.isEmpty && !isReviewing && paymentPhase == PaymentPhase.none) ...[
                 const SizedBox(width: 8),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -150,7 +162,14 @@ class OrderSummaryPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          if (isReviewing) ...[
+          if (paymentPhase != PaymentPhase.none)
+            _PaymentSection(
+              phase: paymentPhase,
+              error: paymentError,
+              onRetry: onRetryPayment,
+              onNewOrder: onNewOrder,
+            )
+          else if (isReviewing) ...[
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
@@ -202,5 +221,148 @@ class OrderSummaryPanel extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// The bottom action area once an order has been confirmed and reached
+/// Square — one view per [PaymentPhase] (skips [PaymentPhase.none], which
+/// [OrderSummaryPanel] never routes here for). Kept as its own widget
+/// rather than more inline branches in [OrderSummaryPanel.build] since each
+/// phase's content is unrelated to the others (spinner+prompt vs.
+/// success vs. error+retry), not just a style variant of one shared layout.
+class _PaymentSection extends StatelessWidget {
+  final PaymentPhase phase;
+  final String? error;
+  final VoidCallback onRetry;
+  final VoidCallback onNewOrder;
+
+  const _PaymentSection({
+    required this.phase,
+    required this.error,
+    required this.onRetry,
+    required this.onNewOrder,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    switch (phase) {
+      case PaymentPhase.none:
+        return const SizedBox.shrink();
+
+      case PaymentPhase.startingCheckout:
+      case PaymentPhase.awaitingPayment:
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primaryContainer,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: theme.colorScheme.onPrimaryContainer,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Please tap, insert, or swipe your card on the terminal to pay.',
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.onPrimaryContainer),
+                ),
+              ),
+            ],
+          ),
+        );
+
+      case PaymentPhase.paid:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primaryContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.check_circle, color: theme.colorScheme.onPrimaryContainer),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      "Payment received — thank you! We'll get your order ready.",
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: theme.colorScheme.onPrimaryContainer),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: onNewOrder,
+              style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+              child: const Text('Start a New Order'),
+            ),
+          ],
+        );
+
+      case PaymentPhase.failed:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.errorContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.error_outline, color: theme.colorScheme.onErrorContainer),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      error ?? 'Something went wrong with payment.',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: onNewOrder,
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                    child: const Text('Start Over'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: onRetry,
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                    child: const Text('Try Again'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+    }
   }
 }

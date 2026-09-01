@@ -8,6 +8,7 @@ import '../data/agent/conversation_turn.dart';
 import '../data/agent/order_agent_service.dart';
 import '../data/agent/order_confirmation_speech.dart';
 import '../data/order/order_submission_service.dart';
+import '../data/payment/payment_service.dart';
 import '../data/speech/speech_service.dart';
 import '../models/menu.dart';
 import '../models/order.dart';
@@ -18,6 +19,35 @@ import 'tts_playback_controller.dart';
 const _uuid = Uuid();
 
 enum ListeningStatus { idle, listening, thinking }
+
+/// Where a confirmed order is in the POS-payment leg of the flow, once
+/// `create-order` has already reported the order reached Square
+/// (`sentToPos`). Deliberately separate from the local, pre-confirm
+/// [OrderStatus] enum on [Order] — that one is about the cart itself before
+/// confirmation; this one is the richer backend payment state, driven by
+/// `pos-square-terminal-checkout`/`pos-square-order-pay`.
+enum PaymentPhase {
+  /// No payment leg in progress — either nothing's been confirmed yet, or
+  /// the confirmed order never reached Square (see `posStatus` handling in
+  /// [KioskController.confirmOrder]).
+  none,
+
+  /// [KioskController._beginPayment] is calling `pos-square-terminal-checkout`.
+  startingCheckout,
+
+  /// The Terminal checkout started; [KioskController] is polling
+  /// `pos-square-order-pay` for the customer to complete payment.
+  awaitingPayment,
+
+  /// `pos-square-order-pay` confirmed the payment captured.
+  paid,
+
+  /// Starting the checkout failed, a poll returned a hard failure, or
+  /// polling timed out without a payment. [KioskState.paymentError] carries
+  /// the customer-safe reason. Recoverable via [KioskController.retryPayment]
+  /// — retrying reuses the same canonical order, never creates a new one.
+  failed,
+}
 
 class KioskState {
   final ListeningStatus listeningStatus;
@@ -56,6 +86,16 @@ class KioskState {
   /// rather than a duplicate.
   final String? pendingIdempotencyKey;
 
+  /// Where the POS-payment leg is for [confirmedOrderId] — see
+  /// [PaymentPhase]. Stays [PaymentPhase.none] for any order that never
+  /// reached Square in the first place.
+  final PaymentPhase paymentPhase;
+
+  /// Customer-safe reason the payment leg failed — set only alongside
+  /// [PaymentPhase.failed]. Never a raw Square/Supabase error (see
+  /// [PaymentServiceException]).
+  final String? paymentError;
+
   const KioskState({
     this.listeningStatus = ListeningStatus.idle,
     this.liveTranscript = '',
@@ -68,6 +108,8 @@ class KioskState {
     this.isSubmittingOrder = false,
     this.confirmedOrderId,
     this.pendingIdempotencyKey,
+    this.paymentPhase = PaymentPhase.none,
+    this.paymentError,
   });
 
   KioskState copyWith({
@@ -83,6 +125,9 @@ class KioskState {
     bool? isSubmittingOrder,
     String? confirmedOrderId,
     String? pendingIdempotencyKey,
+    PaymentPhase? paymentPhase,
+    String? paymentError,
+    bool clearPaymentError = false,
   }) {
     return KioskState(
       listeningStatus: listeningStatus ?? this.listeningStatus,
@@ -96,6 +141,8 @@ class KioskState {
       isSubmittingOrder: isSubmittingOrder ?? this.isSubmittingOrder,
       confirmedOrderId: confirmedOrderId ?? this.confirmedOrderId,
       pendingIdempotencyKey: pendingIdempotencyKey ?? this.pendingIdempotencyKey,
+      paymentPhase: paymentPhase ?? this.paymentPhase,
+      paymentError: clearPaymentError ? null : (paymentError ?? this.paymentError),
     );
   }
 }
@@ -114,16 +161,26 @@ class KioskController extends StateNotifier<KioskState> {
   final OrderAgentService _agent;
   final TtsPlaybackController _tts;
   final OrderSubmissionService _orderSubmission;
+  final PaymentService _payment;
   final CafeMenu _menu;
   final String _cafeId;
 
   static const int _maxHistoryTurns = 12;
+
+  /// ~90s of polling at a 2s interval — long enough for a customer to
+  /// tap/insert/approve a card on the Terminal without feeling rushed,
+  /// short enough that the kiosk never looks hung if nobody pays.
+  static const int _paymentPollMaxAttempts = 45;
+  static const Duration _paymentPollInterval = Duration(seconds: 2);
+
+  Timer? _paymentPollTimer;
 
   KioskController(
     this._speech,
     this._agent,
     this._tts,
     this._orderSubmission,
+    this._payment,
     this._menu,
     this._cafeId,
   ) : super(const KioskState());
@@ -147,7 +204,33 @@ class KioskController extends StateNotifier<KioskState> {
     await _tts.stop();
 
     final available = await _speech.initialize(
-      onStatus: (status) => debugPrint('[speech] status: $status'),
+      onStatus: (status) {
+        debugPrint('[speech] status: $status');
+        // The recognizer can end (`notListening`, then `done`) without ever
+        // firing `onResult` with isFinal=true — expected, not a bug, on the
+        // web backend specifically: the underlying speech_to_text plugin's
+        // web implementation never marks a Web Speech API result as final
+        // (see speech_to_text_web.dart's _onResult, which hardcodes
+        // ResultType.partial), so `isFinal` is simply never true there, no
+        // matter what was actually said.
+        //
+        // So: whatever the last partial transcript was IS the customer's
+        // utterance — submit it ourselves rather than discarding it. Only
+        // fall back to "I didn't catch anything" when nothing was
+        // transcribed at all (genuine silence/misfire).
+        if ((status == 'notListening' || status == 'done') &&
+            state.listeningStatus == ListeningStatus.listening) {
+          final captured = state.liveTranscript.trim();
+          if (captured.isNotEmpty) {
+            _submitTranscript(captured);
+          } else {
+            state = state.copyWith(
+              listeningStatus: ListeningStatus.idle,
+              errorMessage: "I didn't catch anything. Tap the mic to try again.",
+            );
+          }
+        }
+      },
       onError: (error) {
         debugPrint('[speech] error: $error');
         // Stopping recognition after a final result can itself emit a
@@ -179,6 +262,18 @@ class KioskController extends StateNotifier<KioskState> {
     await _speech.startListening(
       onResult: (text, isFinal) {
         debugPrint('[speech] result: "$text" isFinal=$isFinal');
+        // The web backend can fire a LATE, synthesized "final" result (see
+        // speech_to_text.dart's _onFinalTimeout, ~2s after the recognizer
+        // already stopped) — after the `onStatus` handler above has
+        // already submitted whatever was captured at end-of-listening.
+        // Without this guard, that late event would submit the SAME
+        // utterance a second time: two concurrent agent turns, two
+        // `_tts.speak()` calls interrupting each other, and two
+        // assistantReply/liveTranscript writes racing to update the UI —
+        // exactly the "says two things and interrupts itself" symptom.
+        // Once we've moved off `listening` (submitted, errored, or
+        // recovered), no further result event may act.
+        if (state.listeningStatus != ListeningStatus.listening) return;
         state = state.copyWith(liveTranscript: text);
         if (isFinal && text.trim().isNotEmpty) {
           _submitTranscript(text.trim());
@@ -195,14 +290,21 @@ class KioskController extends StateNotifier<KioskState> {
   }
 
   Future<void> _submitTranscript(String transcript) async {
-    await _speech.stop();
-
+    // Flip away from `listening` *before* stopping the recognizer: `stop()`
+    // itself commonly fires a trailing status/error event (e.g. the web
+    // Speech API backend emits a stray "aborted"/no-match error as it winds
+    // down), and the `onError` guard in `startListening` only ignores that
+    // event if `listeningStatus` has already moved off `listening` by the
+    // time it arrives. Stopping first left a window where a good transcript
+    // could be clobbered by that trailing error right after being captured.
     final customerTurn = ConversationTurn(role: SpeakerRole.customer, text: transcript);
     state = state.copyWith(
       listeningStatus: ListeningStatus.thinking,
       history: [...state.history, customerTurn],
       clearError: true,
     );
+
+    await _speech.stop();
 
     try {
       final result = await _agent.interpret(
@@ -266,7 +368,9 @@ class KioskController extends StateNotifier<KioskState> {
   /// after a failure — the same idempotency key is reused, so a retry can
   /// never create a duplicate order.
   Future<void> confirmOrder() async {
-    if (state.order.isEmpty || state.isSubmittingOrder) return;
+    if (state.order.isEmpty || state.isSubmittingOrder || state.paymentPhase != PaymentPhase.none) {
+      return;
+    }
 
     final idempotencyKey = state.pendingIdempotencyKey ?? _uuid.v4();
     state = state.copyWith(
@@ -288,7 +392,15 @@ class KioskController extends StateNotifier<KioskState> {
         isSubmittingOrder: false,
         confirmedOrderId: result.orderId,
       );
-      unawaited(_tts.speak(buildOrderConfirmedSpeech(result.posStatus)));
+
+      // Only an order that genuinely reached Square has a payment leg to
+      // run — anything else (no POS connection, pos_failed, ...) is still
+      // a safely confirmed order, just with nothing further to pay here.
+      if (result.sentToPos) {
+        unawaited(_beginPayment(result.orderId));
+      } else {
+        unawaited(_tts.speak(buildOrderConfirmedSpeech(result.posStatus)));
+      }
     } catch (_) {
       // The order was NOT created — leave the order itself untouched (still
       // editable) so the customer can simply tap confirm again, reusing the
@@ -302,8 +414,92 @@ class KioskController extends StateNotifier<KioskState> {
     }
   }
 
+  /// Starts (or re-starts, via [retryPayment]) the Terminal-checkout leg for
+  /// an order that has already reached Square. Guarded so a duplicate call
+  /// while one is already in flight is a no-op — `pos-square-terminal-checkout`
+  /// is additionally idempotent server-side (deterministic idempotency key),
+  /// so even a race here can never start two checkouts.
+  Future<void> _beginPayment(String orderId) async {
+    if (state.paymentPhase == PaymentPhase.startingCheckout ||
+        state.paymentPhase == PaymentPhase.awaitingPayment) {
+      return;
+    }
+
+    _paymentPollTimer?.cancel();
+    state = state.copyWith(paymentPhase: PaymentPhase.startingCheckout, clearPaymentError: true);
+
+    try {
+      await _payment.startTerminalCheckout(orderId: orderId);
+    } catch (e) {
+      final message = e is PaymentServiceException
+          ? e.message
+          : 'Could not start payment. Please try again.';
+      state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
+      unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+      return;
+    }
+
+    state = state.copyWith(paymentPhase: PaymentPhase.awaitingPayment);
+    unawaited(_tts.speak(paymentPendingSpeech));
+    _startPollingForPayment(orderId);
+  }
+
+  /// Polls `pos-square-order-pay` (via [_payment]) until it reports the
+  /// payment captured, a hard failure, or the attempt budget runs out.
+  /// Every exit path cancels [_paymentPollTimer] first — this must never be
+  /// left running once the controller has moved past [PaymentPhase.awaitingPayment].
+  void _startPollingForPayment(String orderId) {
+    var attempts = 0;
+    _paymentPollTimer = Timer.periodic(_paymentPollInterval, (timer) async {
+      attempts++;
+
+      final PaymentPollResult result;
+      try {
+        result = await _payment.checkPayment(orderId: orderId);
+      } catch (e) {
+        timer.cancel();
+        final message = e is PaymentServiceException
+            ? e.message
+            : 'Could not confirm payment. Please try again.';
+        state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
+        unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+        return;
+      }
+
+      if (result.paid) {
+        timer.cancel();
+        state = state.copyWith(paymentPhase: PaymentPhase.paid);
+        unawaited(_tts.speak(paymentSucceededSpeech));
+        return;
+      }
+
+      if (attempts >= _paymentPollMaxAttempts) {
+        timer.cancel();
+        const message = 'That took too long. Please try again.';
+        state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
+        unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+      }
+    });
+  }
+
+  /// Customer tapped "Try Again" after [PaymentPhase.failed]. Re-runs the
+  /// checkout on the SAME canonical order (same order id, same deterministic
+  /// idempotency key server-side) — never creates a second order.
+  Future<void> retryPayment() async {
+    final orderId = state.confirmedOrderId;
+    if (orderId == null || state.paymentPhase != PaymentPhase.failed) return;
+    unawaited(_beginPayment(orderId));
+  }
+
   void resetOrder() {
+    _paymentPollTimer?.cancel();
     state = const KioskState();
+  }
+
+  @override
+  void dispose() {
+    _paymentPollTimer?.cancel();
+    super.dispose();
   }
 }
 
@@ -341,6 +537,7 @@ final kioskControllerProvider =
     ref.watch(orderAgentServiceProvider),
     ref.watch(ttsPlaybackControllerProvider.notifier),
     ref.watch(orderSubmissionServiceProvider),
+    ref.watch(paymentServiceProvider),
     menu,
     cafeId,
   );

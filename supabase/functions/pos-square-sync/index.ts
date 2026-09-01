@@ -256,6 +256,11 @@ export async function fetchAllCatalogObjects(params: {
       },
     });
 
+    console.log("SQUARE CATALOG RESPONSE:", {
+      status: res.status,
+      statusText: res.statusText,
+    });
+
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new SquareApiError(
@@ -266,6 +271,13 @@ export async function fetchAllCatalogObjects(params: {
     }
 
     const body = await res.json() as SquareCatalogListResponse;
+
+    console.log("SQUARE CATALOG RESULT:", {
+      objectCount: body.objects?.length ?? 0,
+      objectTypes: body.objects?.map((x) => x.type) ?? [],
+      hasCursor: !!body.cursor,
+    });
+
     all.push(...(body.objects ?? []));
     cursor = body.cursor || undefined;
   } while (cursor);
@@ -433,38 +445,132 @@ export async function handler(req: Request): Promise<Response> {
     // decrypted value is held only in this local variable, used solely as
     // an outbound Authorization header to Square below, and is never
     // returned in a response or written to a log line.
-    const vaultClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      db: { schema: "vault" },
-    });
-    const { data: secretRow, error: secretError } = await vaultClient
-      .from("decrypted_secrets")
-      .select("decrypted_secret")
-      .eq("id", connection.access_token_secret_id)
-      .maybeSingle();
+    const { data: accessToken, error: secretError } = await adminClient
+      .rpc("get_vault_secret", {
+        secret_id: connection.access_token_secret_id,
+      });
 
-    if (secretError || !secretRow?.decrypted_secret) {
+    console.log("VAULT DEBUG:", {
+      type: typeof accessToken,
+      length: typeof accessToken === "string" ? accessToken.length : null,
+      hasValue: !!accessToken,
+      secretError: secretError
+        ? {
+            message: secretError.message,
+            code: secretError.code,
+            details: secretError.details,
+          }
+        : null,
+    });
+
+    if (secretError || !accessToken) {
+      console.error("Vault secret resolution failed:", {
+        message: secretError?.message,
+        code: secretError?.code,
+        details: secretError?.details,
+        hint: secretError?.hint,
+      });
+
       throw new Error("Could not resolve the stored Square access token.");
     }
-    const accessToken = secretRow.decrypted_secret as string;
 
     let result: { productsSynced: number; modifiersSynced: number };
     try {
+      console.log("SQUARE DEBUG:", {
+        environment: SQUARE_ENVIRONMENT,
+        baseUrl: SQUARE_BASE_URL,
+        squareVersion: SQUARE_VERSION,
+        hasAccessToken: !!accessToken,
+        accessTokenLength: accessToken?.length ?? 0,
+      });
+
+      console.log("SQUARE TOKEN DEBUG:", {
+        type: typeof accessToken,
+        length: accessToken?.length,
+        first4: accessToken?.slice(0, 4),
+        last4: accessToken?.slice(-4),
+      });
+
       const catalogObjects = await fetchAllCatalogObjects({
         accessToken,
         baseUrl: SQUARE_BASE_URL,
         squareVersion: SQUARE_VERSION,
       });
 
+      console.log("MARKER SQUARE - CATALOG FETCH COMPLETE", {
+        count: catalogObjects?.length ?? -1,
+      });
+
+      console.log("CATALOG DEBUG:", {
+        catalogObjects: catalogObjects.length,
+        objectTypes: catalogObjects.map((o: any) => o.type),
+      });
+
+      console.log("=== REACHED NORMALIZATION ===", {
+        catalogObjectCount: catalogObjects?.length ?? -1,
+      });
+      
       const { products, modifiers } = normalizeCatalogObjects(catalogObjects);
+
+      console.log("=== NORMALIZATION COMPLETE ===", {
+        products: products.length,
+        modifiers: modifiers.length,
+      });
+
+      console.log("NORMALIZED DEBUG:", {
+        products: products.length,
+        modifiers: modifiers.length,
+      });
+
       const syncedAt = new Date().toISOString();
-      const productRows = buildProductRows(connectionId, connection.cafe_id as string, products, syncedAt);
-      const modifierRows = buildModifierRows(connectionId, connection.cafe_id as string, modifiers, syncedAt);
+
+      const productRows = buildProductRows(
+        connectionId,
+        connection.cafe_id as string,
+        products,
+        syncedAt,
+      );
+
+      const modifierRows = buildModifierRows(
+        connectionId,
+        connection.cafe_id as string,
+        modifiers,
+        syncedAt,
+      );
+
+      console.log("ROWS DEBUG:", {
+        productRows: productRows.length,
+        modifierRows: modifierRows.length,
+      });
+
+      console.log("=== ABOUT TO UPSERT ===", {
+        productRows: productRows.length,
+        modifierRows: modifierRows.length,
+      });
 
       if (productRows.length > 0) {
-        const { error } = await adminClient
+        const { data, error } = await adminClient
           .from("pos_products")
-          .upsert(productRows, { onConflict: "pos_connection_id,external_product_id" });
-        if (error) throw new Error(`Could not save synced products: ${error.message}`);
+          .upsert(productRows, {
+            onConflict: "pos_connection_id,external_product_id",
+          })
+          .select();
+
+        console.log("PRODUCT UPSERT DEBUG:", {
+          attempted: productRows.length,
+          returned: data?.length ?? 0,
+          error: error
+            ? {
+                message: error.message,
+                code: error.code,
+                details: error.details,
+              }
+            : null,
+        });
+
+        if (error) {
+          throw new Error(`Could not save synced products: ${error.message}`);
+        }
       }
 
       if (modifierRows.length > 0) {

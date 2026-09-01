@@ -9,6 +9,9 @@ import '../data/menu/supabase_menu_repository.dart';
 import '../data/order/edge_function_order_submission_service.dart';
 import '../data/order/order_submission_service.dart';
 import '../data/order/order_submission_transport.dart';
+import '../data/payment/edge_function_payment_service.dart';
+import '../data/payment/payment_service.dart';
+import '../data/payment/payment_transport.dart';
 import '../data/speech/speech_service.dart';
 import '../data/tts/elevenlabs_tts_service.dart';
 import '../data/tts/tts_service.dart';
@@ -53,6 +56,21 @@ final orderSubmissionServiceProvider = Provider<OrderSubmissionService>((ref) {
   }
   return EdgeFunctionOrderSubmissionService(
     SupabaseOrderSubmissionTransport(Supabase.instance.client),
+  );
+});
+
+/// Starts a Square Terminal checkout and polls for its completion once a
+/// canonical order has reached the POS — see `pos-square-terminal-checkout`
+/// and `pos-square-order-pay`.
+final paymentServiceProvider = Provider<PaymentService>((ref) {
+  if (!Env.isSupabaseConfigured) {
+    throw StateError(
+      'Supabase is not configured yet. Add SUPABASE_URL and SUPABASE_ANON_KEY '
+      'to app/.env — see .env.example.',
+    );
+  }
+  return EdgeFunctionPaymentService(
+    SupabasePaymentTransport(Supabase.instance.client),
   );
 });
 

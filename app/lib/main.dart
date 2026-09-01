@@ -15,7 +15,7 @@ Future<void> main() async {
   // Real paths (/admin/login, /cafe/abc123) instead of hash fragments — the
   // web form of a café QR/deep link needs a real path. No-op on mobile.
   usePathUrlStrategy();
-  await dotenv.load(fileName: '.env');
+  await dotenv.load(fileName: 'env');
 
   if (Env.isSupabaseConfigured) {
     await Supabase.initialize(

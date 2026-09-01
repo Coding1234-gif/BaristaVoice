@@ -16,6 +16,11 @@ class AuthService {
 
   Future<void> signIn({required String email, required String password}) async {
     await _client.auth.signInWithPassword(email: email, password: password);
+
+    final session = Supabase.instance.client.auth.currentSession;
+
+    print('USER ID: ${session?.user.id}');
+    print('ACCESS TOKEN: ${session?.accessToken}');
   }
 
   /// Signs up a new cafe owner AND provisions their cafe + cafe_admin

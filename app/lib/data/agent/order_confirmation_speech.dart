@@ -34,6 +34,25 @@ String buildOrderConfirmedSpeech(String? posStatus) {
 const String orderConfirmationFailedSpeech =
     "Sorry, something went wrong confirming your order. Please try again.";
 
+/// Spoken once the Terminal checkout has actually started — i.e. the order
+/// itself is safe and the customer just needs to pay, not before (see
+/// `KioskController._beginPayment`).
+const String paymentPendingSpeech =
+    "Please tap, insert, or swipe your card on the terminal to pay.";
+
+/// Spoken once `pos-square-order-pay` reports the payment as captured —
+/// never before that, so this can't say "paid" while Square hasn't actually
+/// confirmed it.
+const String paymentSucceededSpeech =
+    "Payment received — thank you! We'll get your order ready.";
+
+/// Spoken when starting the Terminal checkout fails, or when polling for
+/// payment ends in a hard failure or times out. [reason] is always a
+/// customer-safe message already produced by [PaymentServiceException] or
+/// the poll timeout — never a raw Square/Supabase error.
+String buildPaymentFailedSpeech(String reason) =>
+    "Sorry, $reason";
+
 String _describeItem(OrderItem item) {
   final options = <String>[];
   if (item.size != null) options.add(item.size!);

@@ -588,20 +588,26 @@ export async function handler(req: Request): Promise<Response> {
       }
 
       // Requirement 7: resolve the access token from Vault, server-role
-      // only — never from the client, never returned below.
-      const vaultClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-        db: { schema: "vault" },
-      });
-      const { data: secretRow, error: secretError } = await vaultClient
-        .from("decrypted_secrets")
-        .select("decrypted_secret")
-        .eq("id", connection.access_token_secret_id)
-        .maybeSingle();
+      // only — never from the client, never returned below. Vault secrets
+      // live in the `vault` schema, which PostgREST does not expose by
+      // default (not even to a service-role client scoped to it) —
+      // get_vault_secret() is a SECURITY DEFINER function in `public` that
+      // reads vault.decrypted_secrets internally, reached here via RPC.
+      // Mirrors the same fix already applied to pos-square-sync.
+      const { data: accessToken, error: secretError } = await adminClient
+        .rpc("get_vault_secret", {
+          secret_id: connection.access_token_secret_id,
+        });
 
-      if (secretError || !secretRow?.decrypted_secret) {
+      if (secretError || !accessToken) {
+        console.error("Vault secret resolution failed:", {
+          message: secretError?.message,
+          code: secretError?.code,
+          details: secretError?.details,
+          hint: secretError?.hint,
+        });
         throw new Error("Could not resolve the stored Square access token.");
       }
-      const accessToken = secretRow.decrypted_secret as string;
 
       const payload = buildSquareCreateOrderPayload({
         locationId: connection.location_id as string,

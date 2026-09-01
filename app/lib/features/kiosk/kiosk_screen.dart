@@ -436,9 +436,13 @@ class _KioskBody extends ConsumerWidget {
           menu: menu,
           isReviewing: kioskState.isReviewingOrder,
           isSubmitting: kioskState.isSubmittingOrder,
+          paymentPhase: kioskState.paymentPhase,
+          paymentError: kioskState.paymentError,
           onReview: controller.beginOrderReview,
           onConfirmYes: controller.confirmOrder,
           onConfirmNo: controller.cancelOrderReview,
+          onRetryPayment: controller.retryPayment,
+          onNewOrder: controller.resetOrder,
         ),
       ],
     );

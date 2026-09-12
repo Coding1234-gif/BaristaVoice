@@ -164,7 +164,7 @@ You can run on a physical Android device or an Android emulator.
 **Physical phone**
 
 1. Enable Developer Options and USB debugging on the phone.
-2. Connect it by USB and accept the debugging prompt.
+2. Connect it by USB and accept the debugging prompt. (If this fails, try wireless debugging instead.)
 3. Confirm Flutter detects it:
 
    ```bash

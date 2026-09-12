@@ -42,6 +42,9 @@ class LlmOrderAgentService implements OrderAgentService {
       reply: data['reply'] as String,
       order: Order.fromJson(data['order'] as Map<String, dynamic>),
       needsClarification: data['needsClarification'] as bool? ?? false,
+      mentionedItemIds: (data['mentionedItemIds'] as List<dynamic>? ?? [])
+          .map((e) => e as String)
+          .toList(),
     );
   }
 }

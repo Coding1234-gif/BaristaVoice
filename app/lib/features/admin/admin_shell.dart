@@ -18,6 +18,7 @@ class _NavItem {
 
 const _navItems = [
   _NavItem('Overview', Icons.dashboard_outlined, '/admin'),
+  _NavItem('Analytics', Icons.bar_chart_outlined, '/admin/analytics'),
   _NavItem('Menu', Icons.restaurant_menu_outlined, '/admin/menu'),
   _NavItem('Products', Icons.local_cafe_outlined, '/admin/products'),
   _NavItem('Settings', Icons.settings_outlined, '/admin/settings'),

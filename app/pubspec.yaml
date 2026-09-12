@@ -43,14 +43,25 @@ dependencies:
   # URL-based routing (customer kiosk at `/`, cafe admin dashboard at `/admin/**`)
   go_router: ^14.6.2
 
-  # File picking for menu PDF/image uploads and product images (web + mobile)
-  file_picker: ^8.1.6
+  # File picking for menu PDF/image uploads and product images (web + mobile).
+  # Pinned to 10.3.0, not 11.x/12.x — those introduce breaking API changes (a
+  # static-method refactor, then removal of FilePickerResult) that would
+  # require touching product_edit_dialog.dart and menu_upload_screen.dart.
+  # 10.3.0 keeps the same FilePicker.platform.pickFiles()/FilePickerResult
+  # API as 8.x while fixing the compileSdk-36 AAR metadata conflict that
+  # blocked release builds. (10.3.11, the latest 10.x patch, has an
+  # unrelated dependency conflict in this project — not investigated since
+  # 10.3.0 already resolves and builds cleanly.)
+  file_picker: ^10.3.0
 
   # Persists which café this device last viewed (survives app restarts)
   shared_preferences: ^2.3.3
 
   # Renders the "Your Café QR Code" image in the admin dashboard
   qr_flutter: ^4.1.0
+
+  # Charts for the café analytics dashboard
+  fl_chart: ^1.2.0
 
   # Backend: Postgres + realtime + storage
   supabase_flutter: ^2.8.0
@@ -60,7 +71,7 @@ dependencies:
   permission_handler: ^11.3.1
 
   # Subscription monetization (RevenueCat Shipaton requirement)
-  purchases_flutter: ^8.4.4
+  purchases_flutter: ^10.11.0
 
   # Local env/secrets loading (never hardcode keys)
   flutter_dotenv: ^5.2.1
@@ -68,6 +79,7 @@ dependencies:
   uuid: ^4.5.1
   intl: ^0.19.0
   just_audio: ^0.10.6
+  purchases_ui_flutter: ^10.11.0
 
 dev_dependencies:
   flutter_test:

@@ -3,6 +3,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/cafe/cafe_repository.dart';
+import '../data/history/visited_cafe.dart';
+import '../data/history/visited_cafes_repository.dart';
 import '../models/cafe.dart';
 
 const _prefsKey = 'current_cafe_id';
@@ -47,6 +49,18 @@ final currentCafeProvider = FutureProvider<Cafe?>((ref) async {
   return ref.watch(cafeRepositoryProvider).getCafe(cafeId);
 });
 
+final visitedCafesRepositoryProvider = Provider<VisitedCafesRepository>((ref) {
+  return VisitedCafesRepository();
+});
+
+/// The customer's on-device "order again" history — see ProfileScreen.
+/// Auto-disposing + family-free, same convention as the admin dashboard's
+/// data providers: resolveAndSelectCafe invalidates this after recording a
+/// new visit rather than this watching anything live.
+final visitedCafesProvider = FutureProvider<List<VisitedCafe>>((ref) {
+  return ref.watch(visitedCafesRepositoryProvider).getAll();
+});
+
 /// Resolves a scanned/typed café id-or-slug and, only on success, makes it
 /// the current café. Shared by the QR/deep-link entry route and the manual
 /// "enter a café code" fallback so there's exactly one place this happens.
@@ -56,6 +70,8 @@ Future<Cafe?> resolveAndSelectCafe(WidgetRef ref, String idOrSlug) async {
   final cafe = await ref.read(cafeRepositoryProvider).resolveCafe(idOrSlug);
   if (cafe != null) {
     await ref.read(currentCafeIdProvider.notifier).setCafe(cafe.id);
+    await ref.read(visitedCafesRepositoryProvider).recordVisit(cafe);
+    ref.invalidate(visitedCafesProvider);
   }
   return cafe;
 }

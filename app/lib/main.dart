@@ -8,7 +8,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/env.dart';
 import 'core/router.dart';
 import 'core/theme.dart';
+import 'data/billing/subscription_service.dart';
 import 'state/cafe_providers.dart';
+import 'state/theme_providers.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -24,6 +26,10 @@ Future<void> main() async {
     );
   }
 
+  // A no-op on web / without RevenueCat keys configured — see
+  // SubscriptionService's header comment.
+  await SubscriptionService().configure();
+
   // Whichever café this device last viewed, persisted across restarts —
   // falls back to CAFE_ID (a kiosk pinned to one café via .env) only if
   // nothing has been scanned/selected yet. Loaded before runApp so there is
@@ -31,11 +37,13 @@ Future<void> main() async {
   final prefs = await SharedPreferences.getInstance();
   final initialCafeId = prefs.getString('current_cafe_id') ??
       (Env.cafeId.isNotEmpty ? Env.cafeId : null);
+  final initialThemeMode = (prefs.getBool('dark_mode_enabled') ?? false) ? ThemeMode.dark : ThemeMode.light;
 
   runApp(
     ProviderScope(
       overrides: [
         currentCafeIdProvider.overrideWith((ref) => CurrentCafeController(initialCafeId)),
+        themeModeProvider.overrideWith((ref) => ThemeModeController(initialThemeMode)),
       ],
       child: const BaristaVoiceApp(),
     ),
@@ -51,10 +59,13 @@ class BaristaVoiceApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
+    final themeMode = ref.watch(themeModeProvider);
     return MaterialApp.router(
       title: 'BaristaVoice',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
+      darkTheme: buildAppDarkTheme(),
+      themeMode: themeMode,
       routerConfig: router,
     );
   }

@@ -117,9 +117,12 @@ class OrderSummaryPanel extends StatelessWidget {
                 itemBuilder: (context, i) {
                   final item = order.items[i];
                   final optionsLine = _optionsLine(item);
+                  final menuItem = menu.findById(item.menuItemId);
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      _ItemThumbnail(imageUrl: menuItem?.imageUrl),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -136,6 +139,19 @@ class OrderSummaryPanel extends StatelessWidget {
                                 optionsLine,
                                 style: theme.textTheme.bodySmall?.copyWith(
                                   color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            if (menuItem != null && menuItem.description.isNotEmpty)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  menuItem.description,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.8),
+                                    fontStyle: FontStyle.italic,
+                                  ),
                                 ),
                               ),
                           ],
@@ -222,6 +238,43 @@ class OrderSummaryPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Shows the item's product photo so the customer can visually confirm
+/// what's in their cart, not just read a name — falls back to a plain cup
+/// icon when the item has no photo set (or it fails to load), never an
+/// empty gap.
+class _ItemThumbnail extends StatelessWidget {
+  final String? imageUrl;
+  const _ItemThumbnail({required this.imageUrl});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final url = imageUrl;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(10),
+      child: SizedBox(
+        width: 48,
+        height: 48,
+        child: url == null || url.isEmpty
+            ? _placeholder(theme)
+            : Image.network(
+                url,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => _placeholder(theme),
+                loadingBuilder: (context, child, progress) =>
+                    progress == null ? child : _placeholder(theme),
+              ),
+      ),
+    );
+  }
+
+  Widget _placeholder(ThemeData theme) => Container(
+        color: theme.colorScheme.surfaceContainerHighest,
+        child: Icon(Icons.local_cafe_outlined, size: 22, color: theme.colorScheme.onSurfaceVariant),
+      );
 }
 
 /// The bottom action area once an order has been confirmed and reached

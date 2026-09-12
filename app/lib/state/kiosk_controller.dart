@@ -57,6 +57,12 @@ class KioskState {
   final String? assistantReply;
   final String? errorMessage;
 
+  /// IDs of menu items the latest assistant reply is actually about — drives
+  /// the item cards shown below the conversation panel (see
+  /// MentionedItemsStrip). Empty when the reply wasn't about any specific
+  /// item(s), e.g. a clarifying question.
+  final List<String> mentionedItemIds;
+
   /// Whether the customer has tapped "Start Order" yet. That first tap is
   /// what lets [KioskController.startOrder] spend a user gesture unlocking
   /// autoplay (see `TtsPlaybackController.unlockAudio`) — before that, the
@@ -103,6 +109,7 @@ class KioskState {
     this.history = const [],
     this.assistantReply,
     this.errorMessage,
+    this.mentionedItemIds = const [],
     this.audioUnlocked = false,
     this.isReviewingOrder = false,
     this.isSubmittingOrder = false,
@@ -120,6 +127,7 @@ class KioskState {
     String? assistantReply,
     String? errorMessage,
     bool clearError = false,
+    List<String>? mentionedItemIds,
     bool? audioUnlocked,
     bool? isReviewingOrder,
     bool? isSubmittingOrder,
@@ -136,6 +144,7 @@ class KioskState {
       history: history ?? this.history,
       assistantReply: assistantReply ?? this.assistantReply,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
+      mentionedItemIds: mentionedItemIds ?? this.mentionedItemIds,
       audioUnlocked: audioUnlocked ?? this.audioUnlocked,
       isReviewingOrder: isReviewingOrder ?? this.isReviewingOrder,
       isSubmittingOrder: isSubmittingOrder ?? this.isSubmittingOrder,
@@ -246,8 +255,11 @@ class KioskController extends StateNotifier<KioskState> {
     );
 
     if (!available) {
+      final permanentlyDenied = await _speech.isPermissionPermanentlyDenied;
       state = state.copyWith(
-        errorMessage: 'Speech recognition is not available on this device.',
+        errorMessage: permanentlyDenied
+            ? 'Microphone access is turned off for this app. Enable it in your device Settings to order by voice.'
+            : 'Speech recognition is not available on this device.',
       );
       return;
     }
@@ -321,6 +333,7 @@ class KioskController extends StateNotifier<KioskState> {
         order: result.order,
         assistantReply: result.reply,
         history: [...state.history, assistantTurn],
+        mentionedItemIds: result.mentionedItemIds,
       );
 
       // Auto-play: the customer never has to press play for a normal
@@ -332,8 +345,31 @@ class KioskController extends StateNotifier<KioskState> {
         listeningStatus: ListeningStatus.idle,
         errorMessage:
             "Sorry, something went wrong understanding that. Could you try again?",
+        mentionedItemIds: const [],
       );
     }
+  }
+
+  /// Same pipeline as a spoken utterance, for the typed-text fallback (see
+  /// KioskScreen's input mode toggle) — `_submitTranscript` doesn't care
+  /// where the text came from.
+  Future<void> submitTypedText(String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty || state.listeningStatus != ListeningStatus.idle) return;
+    await _submitTranscript(trimmed);
+  }
+
+  /// Tap-to-add from a mentioned-item card's detail view — adds one of
+  /// [item] at its base price/options, bypassing the LLM entirely. The
+  /// customer can still refine it by voice/text afterward ("make it large",
+  /// "add oat milk") exactly like any other order line.
+  void addItemDirectly(MenuItem item) {
+    if (state.isSubmittingOrder || state.paymentPhase != PaymentPhase.none) return;
+    final newItem = OrderItem(menuItemId: item.id, name: item.name);
+    state = state.copyWith(
+      order: state.order.copyWith(items: [...state.order.items, newItem]),
+      isReviewingOrder: false,
+    );
   }
 
   List<ConversationTurn> _recentHistory() {

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 /// Thin wrapper around `speech_to_text` (native STT on iOS/Android, Web
@@ -8,11 +9,44 @@ class SpeechService {
   final stt.SpeechToText _speech = stt.SpeechToText();
   bool _isInitialized = false;
 
+  /// Requests mic/speech permission BEFORE handing off to speech_to_text's
+  /// own `initialize()`, rather than letting that call trigger the OS
+  /// permission prompt itself. Without this, the very first "Start Order" ->
+  /// tap-mic on a fresh install races the permission dialog: initialize()
+  /// (and the listen() right after it) can return false/fail while the
+  /// prompt is still on screen, so the customer has to tap the mic again
+  /// once they've actually granted it — the "had to try 2-3 times" symptom.
+  /// `Permission.speech` is the one to request here, not
+  /// `Permission.microphone` — the permission_handler docs are explicit that
+  /// on iOS this requests actual speech-recognition access (not just mic
+  /// access), which is what `speech_to_text` needs there; on Android it's
+  /// equivalent to requesting the microphone permission. No-op on web: the
+  /// browser handles its own permission prompt synchronously inside the Web
+  /// Speech API call, and permission_handler doesn't support web anyway.
+  Future<bool> _ensurePermission() async {
+    if (kIsWeb) return true;
+    final status = await Permission.speech.request();
+    return status.isGranted;
+  }
+
+  /// True only when the customer has already said "don't allow" once before
+  /// — re-requesting won't show the OS prompt again in that case, so the UI
+  /// needs a different message pointing them at Settings instead of just
+  /// "tap the mic to try again".
+  Future<bool> get isPermissionPermanentlyDenied async {
+    if (kIsWeb) return false;
+    return Permission.speech.isPermanentlyDenied;
+  }
+
   Future<bool> initialize({
     required void Function(String status) onStatus,
     required void Function(String error) onError,
   }) async {
     if (_isInitialized) return true;
+
+    final permitted = await _ensurePermission();
+    if (!permitted) return false;
+
     _isInitialized = await _speech.initialize(
       onStatus: onStatus,
       onError: (error) => onError(error.errorMsg),

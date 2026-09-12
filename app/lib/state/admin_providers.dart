@@ -2,6 +2,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../data/admin/admin_models.dart';
+import '../data/admin/analytics_insights.dart';
+import '../data/admin/analytics_models.dart';
+import '../data/admin/analytics_repository.dart';
 import '../data/admin/cafe_admin_repository.dart';
 import '../data/admin/pos_mapping_repository.dart';
 import '../data/auth/profile.dart';
@@ -13,6 +16,10 @@ final cafeAdminRepositoryProvider = Provider<CafeAdminRepository>((ref) {
 
 final posMappingRepositoryProvider = Provider<PosMappingRepository>((ref) {
   return PosMappingRepository(Supabase.instance.client);
+});
+
+final analyticsRepositoryProvider = Provider<AnalyticsRepository>((ref) {
+  return AnalyticsRepository(Supabase.instance.client);
 });
 
 /// The cafe currently being managed. For a cafe_admin this is always their
@@ -55,4 +62,37 @@ final menuUploadsProvider = FutureProvider<List<MenuUpload>>((ref) async {
   final cafeId = ref.watch(activeCafeIdProvider);
   if (cafeId == null) return [];
   return ref.watch(cafeAdminRepositoryProvider).getMenuUploads(cafeId);
+});
+
+/// How far back the analytics dashboard looks — long enough for a
+/// meaningful daily chart and a week-over-week comparison, short enough to
+/// stay a cheap query for a single café's order volume.
+const analyticsWindowDays = 30;
+
+/// Both raw row sets AND the computed [AnalyticsInsights] are exposed as
+/// separate providers (rather than only the computed result) so a future
+/// screen that just needs the raw numbers doesn't have to recompute
+/// insights it won't use.
+final orderSummariesProvider = FutureProvider<List<OrderSummaryRow>>((ref) async {
+  final cafeId = ref.watch(activeCafeIdProvider);
+  if (cafeId == null) return <OrderSummaryRow>[];
+  final since = DateTime.now().subtract(const Duration(days: analyticsWindowDays));
+  return ref.watch(analyticsRepositoryProvider).getOrderSummaries(cafeId: cafeId, since: since);
+});
+
+final itemSalesProvider = FutureProvider<List<ItemSaleRow>>((ref) async {
+  final cafeId = ref.watch(activeCafeIdProvider);
+  if (cafeId == null) return <ItemSaleRow>[];
+  final since = DateTime.now().subtract(const Duration(days: analyticsWindowDays));
+  return ref.watch(analyticsRepositoryProvider).getItemSales(cafeId: cafeId, since: since);
+});
+
+/// Combines both raw providers into the pure, computed [AnalyticsInsights]
+/// the analytics screen actually renders. Recomputes whenever either raw
+/// provider refreshes; the computation itself (AnalyticsInsights.compute)
+/// is synchronous and cheap, so no caching beyond Riverpod's own is needed.
+final analyticsInsightsProvider = FutureProvider((ref) async {
+  final orders = await ref.watch(orderSummariesProvider.future);
+  final items = await ref.watch(itemSalesProvider.future);
+  return AnalyticsInsights.compute(orders: orders, items: items, now: DateTime.now());
 });

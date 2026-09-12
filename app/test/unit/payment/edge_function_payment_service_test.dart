@@ -104,7 +104,10 @@ void main() {
   group('EdgeFunctionPaymentService.checkPayment', () {
     test('calls pos-square-order-pay with only the orderId', () async {
       final transport = _FakeTransport(
-        (_, _) => const PaymentTransportResult(status: 200, data: {'orderId': 'order-1', 'paid': false}),
+        (_, _) => const PaymentTransportResult(
+          status: 200,
+          data: {'orderId': 'order-1', 'paymentStatus': 'COMPLETED', 'orderStatus': 'COMPLETED'},
+        ),
       );
       final service = EdgeFunctionPaymentService(transport);
 
@@ -114,9 +117,14 @@ void main() {
       expect(transport.lastBody, {'orderId': 'order-1'});
     });
 
-    test('paid: false is a normal result, not an exception — the customer just hasn\'t paid yet', () async {
+    // pos-square-order-pay/index.ts never returns a `paid` field — a 200
+    // with no paymentStatus at all isn't a shape it actually produces today
+    // (the "customer hasn't paid yet" case is currently a 409, handled by
+    // the test below), but this guards against ever again reading a
+    // nonexistent field and silently defaulting to false.
+    test('a 200 with no paymentStatus is treated as not yet paid, not an exception', () async {
       final transport = _FakeTransport(
-        (_, _) => const PaymentTransportResult(status: 200, data: {'orderId': 'order-1', 'paid': false}),
+        (_, _) => const PaymentTransportResult(status: 200, data: {'orderId': 'order-1'}),
       );
       final service = EdgeFunctionPaymentService(transport);
 
@@ -126,11 +134,16 @@ void main() {
       expect(result.paymentId, isNull);
     });
 
-    test('paid: true carries the payment id through', () async {
+    test('paymentStatus: COMPLETED carries the payment id through', () async {
       final transport = _FakeTransport(
         (_, _) => const PaymentTransportResult(
           status: 200,
-          data: {'orderId': 'order-1', 'paid': true, 'paymentId': 'sq-pay-1', 'status': 'paid'},
+          data: {
+            'orderId': 'order-1',
+            'paymentStatus': 'COMPLETED',
+            'paymentId': 'sq-pay-1',
+            'orderStatus': 'COMPLETED',
+          },
         ),
       );
       final service = EdgeFunctionPaymentService(transport);
@@ -139,7 +152,23 @@ void main() {
 
       expect(result.paid, isTrue);
       expect(result.paymentId, 'sq-pay-1');
-      expect(result.status, 'paid');
+      expect(result.status, 'COMPLETED');
+    });
+
+    test('the "no authorized Terminal payment yet" 409 currently throws — the customer just hasn\'t paid yet, '
+        'but the function reports it as an error rather than a normal 200', () async {
+      final transport = _FakeTransport(
+        (_, _) => const PaymentTransportResult(
+          status: 409,
+          data: {'error': 'No authorized Terminal payment was found for this Square order.'},
+        ),
+      );
+      final service = EdgeFunctionPaymentService(transport);
+
+      await expectLater(
+        service.checkPayment(orderId: 'order-1'),
+        throwsA(isA<PaymentServiceException>()),
+      );
     });
 
     test('a hard payment failure (non-200) throws with the server-provided customer-safe message', () async {

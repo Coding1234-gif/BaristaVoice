@@ -10,8 +10,19 @@ import '../../state/kiosk_controller.dart';
 import '../../state/providers.dart';
 import '../../state/tts_playback_controller.dart';
 import 'widgets/conversation_panel.dart';
+import 'widgets/mentioned_items_strip.dart';
 import 'widgets/mic_button.dart';
 import 'widgets/order_summary_panel.dart';
+import 'widgets/typed_input_bar.dart';
+
+/// Voice is the default input (matches the app's spoken-first design), but
+/// a customer can switch to typing at any point via the toggle in
+/// [_InputModeToggle] — both feed the exact same `_submitTranscript`
+/// pipeline in KioskController, so nothing downstream cares which one was
+/// used. Local, ephemeral UI state (not persisted, not shared outside this
+/// screen), so a plain StateProvider here is simpler than threading it
+/// through KioskController/KioskState.
+final _useTypingInputProvider = StateProvider<bool>((ref) => false);
 
 class KioskScreen extends ConsumerWidget {
   const KioskScreen({super.key});
@@ -31,9 +42,26 @@ class KioskScreen extends ConsumerWidget {
             else
               _CafeLoader(cafeId: cafeId),
             const Positioned(top: 4, right: 12, child: _ForCafesLink()),
+            const Positioned(top: 4, left: 4, child: _ProfileLink()),
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Reaches ProfileScreen (café history/"order again", account-free) — kept
+/// at the same Stack level as _ForCafesLink so it's reachable both before a
+/// café is selected and while inside one.
+class _ProfileLink extends StatelessWidget {
+  const _ProfileLink();
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Profile',
+      icon: Icon(Icons.person_outline, color: Theme.of(context).colorScheme.onSurfaceVariant),
+      onPressed: () => context.push('/profile'),
     );
   }
 }
@@ -51,7 +79,7 @@ class _ForCafesLink extends StatelessWidget {
     return TextButton(
       onPressed: () => context.go('/admin/login'),
       style: TextButton.styleFrom(
-        foregroundColor: Colors.black45,
+        foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
         textStyle: const TextStyle(fontSize: 12),
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       ),
@@ -149,10 +177,10 @@ class _NoCafeSelectedState extends ConsumerState<_NoCafeSelected> {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Look for the QR code at the counter or on the table.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.black54),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 28),
               TextField(
@@ -303,7 +331,10 @@ class _CafeHeader extends ConsumerWidget {
                 Text(cafe.name, style: Theme.of(context).textTheme.titleLarge),
                 Text(
                   'AI-powered menu',
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(color: Colors.black54),
+                  style: Theme.of(context)
+                      .textTheme
+                      .labelSmall
+                      ?.copyWith(color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
               ],
             ),
@@ -366,7 +397,7 @@ class _ErrorState extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 40, color: Colors.black45),
+        Icon(icon, size: 40, color: Theme.of(context).colorScheme.onSurfaceVariant),
         const SizedBox(height: 12),
         Text(message, textAlign: TextAlign.center),
         if (onRetry != null) ...[
@@ -404,6 +435,7 @@ class _KioskBody extends ConsumerWidget {
     final controller = ref.read(kioskControllerProvider.notifier);
     final phase = ref.watch(kioskPhaseProvider);
     final ttsStatus = ref.watch(ttsPlaybackControllerProvider).status;
+    final useTyping = ref.watch(_useTypingInputProvider);
 
     return Column(
       children: [
@@ -412,10 +444,18 @@ class _KioskBody extends ConsumerWidget {
             padding: const EdgeInsets.fromLTRB(20, 24, 20, 16),
             child: Column(
               children: [
-                MicButton(
-                  phase: phase,
-                  onTap: controller.startListening,
-                ),
+                const _InputModeToggle(),
+                const SizedBox(height: 12),
+                if (useTyping)
+                  TypedInputBar(
+                    enabled: kioskState.listeningStatus == ListeningStatus.idle,
+                    onSubmit: controller.submitTypedText,
+                  )
+                else
+                  MicButton(
+                    phase: phase,
+                    onTap: controller.startListening,
+                  ),
                 if (ttsStatus == TtsPlaybackStatus.blocked) ...[
                   const SizedBox(height: 16),
                   const _EnableAudioBanner(),
@@ -426,6 +466,12 @@ class _KioskBody extends ConsumerWidget {
                   assistantReply: kioskState.assistantReply,
                   errorMessage: kioskState.errorMessage,
                   isListening: kioskState.listeningStatus == ListeningStatus.listening,
+                ),
+                const SizedBox(height: 16),
+                MentionedItemsStrip(
+                  itemIds: kioskState.mentionedItemIds,
+                  menu: menu,
+                  onAdd: controller.addItemDirectly,
                 ),
               ],
             ),
@@ -529,6 +575,29 @@ class _EnableAudioBanner extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Switches between voice (default) and typed input — a customer who can't
+/// or doesn't want to speak (a noisy café, a shared/quiet space) can still
+/// order. Both modes drive the exact same conversational pipeline.
+class _InputModeToggle extends ConsumerWidget {
+  const _InputModeToggle();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final useTyping = ref.watch(_useTypingInputProvider);
+
+    return SegmentedButton<bool>(
+      segments: const [
+        ButtonSegment(value: false, icon: Icon(Icons.mic_outlined, size: 18), label: Text('Voice')),
+        ButtonSegment(value: true, icon: Icon(Icons.keyboard_outlined, size: 18), label: Text('Type')),
+      ],
+      selected: {useTyping},
+      showSelectedIcon: false,
+      onSelectionChanged: (selection) => ref.read(_useTypingInputProvider.notifier).state = selection.first,
+      style: const ButtonStyle(visualDensity: VisualDensity.compact),
     );
   }
 }

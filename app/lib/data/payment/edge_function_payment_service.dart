@@ -38,9 +38,9 @@ class EdgeFunctionPaymentService implements PaymentService {
     if (result.status == 200 && data is Map) {
       final map = Map<String, dynamic>.from(data);
       return PaymentPollResult(
-        paid: map['paid'] as bool? ?? false,
+        paid: map['paymentStatus'] == 'COMPLETED',
         paymentId: map['paymentId'] as String?,
-        status: map['status'] as String?,
+        status: map['orderStatus'] as String?,
       );
     }
 

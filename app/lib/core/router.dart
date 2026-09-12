@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../features/admin/admin_shell.dart';
+import '../features/admin/analytics/analytics_screen.dart';
+import '../features/admin/billing/premium_gate.dart';
 import '../features/admin/dashboard/admin_dashboard_screen.dart';
 import '../features/admin/login/admin_login_screen.dart';
 import '../features/admin/menu/menu_management_screen.dart';
@@ -13,6 +15,7 @@ import '../features/admin/products/products_screen.dart';
 import '../features/admin/settings/admin_settings_screen.dart';
 import '../features/kiosk/cafe_entry_screen.dart';
 import '../features/kiosk/kiosk_screen.dart';
+import '../features/kiosk/profile_screen.dart';
 import '../state/auth_providers.dart';
 
 /// IMPORTANT: this redirect logic is a navigation convenience only — it
@@ -50,6 +53,7 @@ final routerProvider = Provider<GoRouter>((ref) {
     },
     routes: [
       GoRoute(path: '/', builder: (context, state) => const KioskScreen()),
+      GoRoute(path: '/profile', builder: (context, state) => const ProfileScreen()),
       GoRoute(
         path: '/cafe/:cafeId',
         builder: (context, state) =>
@@ -65,19 +69,43 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state, child) =>
             AdminShell(currentLocation: state.matchedLocation, child: child),
         routes: [
+          // Overview is the only free admin screen — every other tab is
+          // gated behind the premium subscription (see PremiumGate), so a
+          // non-paying café can sign in and look around but can't upload a
+          // menu, edit products, see their QR code, or view analytics.
           GoRoute(path: '/admin', builder: (context, state) => const AdminDashboardScreen()),
+          GoRoute(path: '/admin/analytics', builder: (context, state) => const AnalyticsScreen()),
           GoRoute(
             path: '/admin/menu',
-            builder: (context, state) => const MenuManagementScreen(),
+            builder: (context, state) => const PremiumGate(
+              featureName: 'Menu Management',
+              featureDescription: 'Add, edit, and publish your café\'s menu items.',
+              child: MenuManagementScreen(),
+            ),
           ),
           GoRoute(
             path: '/admin/menu/upload',
-            builder: (context, state) => const MenuUploadScreen(),
+            builder: (context, state) => const PremiumGate(
+              featureName: 'Menu Upload',
+              featureDescription: 'Upload a menu PDF or photo and let AI turn it into structured menu items.',
+              child: MenuUploadScreen(),
+            ),
           ),
-          GoRoute(path: '/admin/products', builder: (context, state) => const ProductsScreen()),
+          GoRoute(
+            path: '/admin/products',
+            builder: (context, state) => const PremiumGate(
+              featureName: 'Products',
+              featureDescription: 'Manage individual product photos, pricing, and availability.',
+              child: ProductsScreen(),
+            ),
+          ),
           GoRoute(
             path: '/admin/settings',
-            builder: (context, state) => const AdminSettingsScreen(),
+            builder: (context, state) => const PremiumGate(
+              featureName: 'Café Settings',
+              featureDescription: 'Manage your café profile and download your ordering QR code.',
+              child: AdminSettingsScreen(),
+            ),
           ),
         ],
       ),

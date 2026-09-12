@@ -55,7 +55,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const SQUARE_ENVIRONMENT = (Deno.env.get("SQUARE_ENVIRONMENT") ?? "sandbox") as "sandbox" | "production";
-const SQUARE_VERSION = Deno.env.get("SQUARE_VERSION") ?? "2024-10-17";
+const SQUARE_VERSION = Deno.env.get("SQUARE_VERSION") ?? "2026-08-19";
 const SQUARE_BASE_URL = SQUARE_ENVIRONMENT === "production"
   ? "https://connect.squareup.com"
   : "https://connect.squareupsandbox.com";

@@ -32,15 +32,22 @@ import {
 // ---------------------------------------------------------------------------
 
 Deno.test("classifyCaller: no Authorization header -> anonymous (the kiosk's own convention)", () => {
-  assertEquals(classifyCaller(null, "service-role-key"), "anonymous");
+  assertEquals(classifyCaller(null, "anon-key", "service-role-key"), "anonymous");
 });
 
 Deno.test("classifyCaller: the exact service-role bearer token -> service_role", () => {
-  assertEquals(classifyCaller("Bearer service-role-key", "service-role-key"), "service_role");
+  assertEquals(classifyCaller("Bearer service-role-key", "anon-key", "service-role-key"), "service_role");
+});
+
+// The real Flutter/Supabase client always attaches `Authorization: Bearer
+// <anon key>` for an unauthenticated caller (it never actually omits the
+// header) — so this is the kiosk's real-world calling convention.
+Deno.test("classifyCaller: the anon-key bearer token is also the kiosk's convention -> anonymous", () => {
+  assertEquals(classifyCaller("Bearer anon-key", "anon-key", "service-role-key"), "anonymous");
 });
 
 Deno.test("classifyCaller: any other bearer token -> authenticated", () => {
-  assertEquals(classifyCaller("Bearer some-user-jwt", "service-role-key"), "authenticated");
+  assertEquals(classifyCaller("Bearer some-user-jwt", "anon-key", "service-role-key"), "authenticated");
 });
 
 Deno.test("isTrustedServiceRoleCaller: exact match only", () => {

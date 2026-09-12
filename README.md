@@ -15,6 +15,9 @@ orders on a simple dashboard.
     Supabase dashboard if one provider's free tier runs dry, no redeploy needed.
   - `tts-speak` holds the ElevenLabs API key server-side and turns the barista's reply text into
     spoken audio (see [Text-to-speech](#text-to-speech) below).
+  - `pos-square-*` / `menu-square-sync` connect a café's own Square account for catalog sync and
+    payments (see [POS payments (Square)](#pos-payments-square) below).
+  - `menu-extractor` turns an uploaded menu photo/PDF into structured menu items.
 - [`BaristaVoice/`](BaristaVoice/) — original static HTML/JS prototype, kept for reference.
 
 ## Getting started
@@ -26,15 +29,35 @@ git clone https://github.com/Coding1234-gif/BaristaVoice.git
 ```
 
 1. `cd app && flutter pub get`
-2. Create a Supabase project, run `supabase/schema.sql` against it, then deploy the Edge Function:
-   `supabase functions deploy order-agent` and set secrets `LLM_PROVIDER` (`gemini` or `groq`) and
-   `LLM_API_KEY` (that provider's key).
-3. Copy `app/.env.example` to `app/.env` and fill in `SUPABASE_URL` / `SUPABASE_ANON_KEY`.
-4. `flutter run`
+2. Create a Supabase project, then run [`supabase/schema.sql`](supabase/schema.sql) against it —
+   paste its full contents into the Supabase Dashboard's **SQL Editor** and run it. It's written to
+   be safe to re-run any number of times (drops/recreates functions, triggers, and policies before
+   redefining them) — see [Keeping the database in sync](#keeping-the-database-in-sync) if you want
+   to verify a change actually landed.
+3. Deploy the Edge Functions: in the Dashboard, open **Edge Functions → Create a new function**
+   for each folder under [`supabase/functions/`](supabase/functions/) (`create-order`, `order-agent`,
+   `menu-extractor`, `tts-speak`, `menu-square-sync`, `pos-square-sync`, `pos-square-order-submit`,
+   `pos-square-order-pay`, `pos-square-terminal-checkout`), pasting in that folder's `index.ts`. (If
+   you do use the Supabase CLI instead, `supabase functions deploy --all` does all of them in one
+   command — see [`supabase/config.toml`](supabase/config.toml)'s header comment.)
+4. Under **Edge Functions → Secrets** (shared across all functions), set:
+   - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — Project Settings → API.
+   - `LLM_PROVIDER` (`gemini` or `groq`) and `LLM_API_KEY` — that provider's key.
+   - `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` — see [Text-to-speech](#text-to-speech).
+   - `SQUARE_ENVIRONMENT` (`sandbox` or `production`) — see
+     [POS payments (Square)](#pos-payments-square).
+5. Copy `app/.env.example` to a new file literally named `app/env` (**not** `.env` — the app loads
+   `env` via `dotenv.load(fileName: 'env')` in `main.dart`; `.env` is kept in `.gitignore` too, but
+   it isn't the file actually read) and fill in `SUPABASE_URL` / `SUPABASE_ANON_KEY`. This file holds
+   client-side config only — none of the secrets from step 4 belong here.
+6. For café subscription billing, see [RevenueCat setup](#café-subscription-billing-revenuecat)
+   below — the app runs and every feature works without it (premium features are always unlocked
+   until RevenueCat is configured).
+7. `flutter run`
 
 Built with **Flutter**, **Supabase** (Postgres, Realtime, Storage, Edge Functions), **Gemini or
-Groq** (switchable) for the conversational order engine, **ElevenLabs** for text-to-speech, and
-**RevenueCat** for café subscription billing.
+Groq** (switchable) for the conversational order engine, **ElevenLabs** for text-to-speech,
+**Square** for POS/payments, and **RevenueCat** for café subscription billing.
 
 ### Text-to-speech
 
@@ -63,13 +86,76 @@ soon as the first chunk is ready instead of waiting for the whole thing.
    - `ELEVENLABS_API_KEY` — the key from step 1.
    - `ELEVENLABS_VOICE_ID` — the voice ID from step 2.
 
-No changes are needed in `app/.env` — like `LLM_API_KEY`, these are server-only secrets and are
+No changes are needed in `app/env` — like `LLM_API_KEY`, these are server-only secrets and are
 never read by the Flutter client.
 
 **Running it locally:** once the secrets above are set and the app is running (`flutter run`) with
 `SUPABASE_URL`/`SUPABASE_ANON_KEY` configured, ask the kiosk for anything — a speaker icon appears
 next to the barista's reply. Tap it to play, tap again (now a stop icon) to stop. A red-tinted
 error icon appears if synthesis fails; tapping it retries.
+
+### Café subscription billing (RevenueCat)
+
+Premium café-admin features (menu management, the QR code, analytics — anything wrapped in
+`PremiumGate`, see [`premium_gate.dart`](app/lib/features/admin/billing/premium_gate.dart)) are
+gated behind a subscription sold through **RevenueCat**. This is entirely optional for local
+development: with no RevenueCat keys set, `SubscriptionService.isSupported` is `false` and every
+premium feature stays unlocked (see
+[`subscription_service.dart`](app/lib/data/billing/subscription_service.dart)) — same on web, which
+RevenueCat's Flutter SDK doesn't support at all.
+
+**Setup (only needed to actually test/ship the paywall):**
+
+1. Create a project at [RevenueCat](https://app.revenuecat.com) and, under it, a Product attached to
+   your Play Store/App Store app listing.
+2. Create an **Entitlement** identified exactly `premium` and attach it to that Product.
+3. Create an **Offering** identified exactly `default_offering` containing a Package for that
+   Product.
+4. Design a **Paywall** for that offering and — this is the step that's easy to miss — **Publish**
+   it. A saved-but-unpublished paywall renders as a blank screen at runtime with no error.
+5. Copy the platform API key(s) from **Project settings → API keys** into `app/env` as
+   `REVENUECAT_API_KEY_ANDROID` / `REVENUECAT_API_KEY_IOS` (or `REVENUECAT_API_KEY_TEST`, RevenueCat's
+   Test Store key, to exercise the purchase flow before real store products exist — it takes
+   priority over the platform keys whenever it's set, and works on either platform).
+6. **Android only:** RevenueCat's paywall UI (`purchases_ui_flutter`) renders a native Fragment, so
+   `MainActivity` must extend `FlutterFragmentActivity` rather than `FlutterActivity`, and the app
+   theme must descend from `Theme.AppCompat` — already done in this repo (see
+   [`MainActivity.kt`](app/android/app/src/main/kotlin/com/baristavoice/barista_voice/MainActivity.kt)
+   and [`styles.xml`](app/android/app/src/main/res/values/styles.xml)); worth knowing if the paywall
+   ever throws `PaywallView requires the MainActivity to extend FlutterFragmentActivity`.
+
+### POS payments (Square)
+
+Each café connects its **own** Square account — payments settle directly into that café's bank
+account, so this can't be a single shared key the way the LLM/TTS keys are. The Square access token
+lives in Supabase Vault, referenced (never stored directly) from that café's row in
+`pos_connections` (see [`schema.sql`](supabase/schema.sql)).
+
+**Current state:** there is no self-serve "Connect Square" flow in the app yet — no OAuth screen,
+no callback Edge Function. Wiring up a café's `pos_connections` row and Vault secret today is a
+manual, per-café setup step. Building a self-serve OAuth connect flow is the natural next step
+before onboarding any café beyond your own test account.
+
+Set `SQUARE_ENVIRONMENT` (`sandbox` or `production`) and `SQUARE_CURRENCY` in the Edge Function
+secrets. Also set `SQUARE_VERSION` explicitly (e.g. `2026-08-19`) rather than relying on its
+per-function default — different Square functions in this repo currently fall back to different
+default API versions if it's left unset.
+
+### Keeping the database in sync
+
+`supabase/schema.sql` is the source of truth (see its own header comment) — you always push by
+re-running the whole file in the SQL Editor, and it's written to be idempotent (drops/recreates
+functions, triggers, and policies rather than assuming a fresh database). To check that what's
+*actually deployed* still matches this file, without needing the Supabase CLI:
+
+```bash
+pg_dump "<connection string from Project Settings → Database>" --schema-only --no-owner --no-privileges > /tmp/live_schema.sql
+diff /tmp/live_schema.sql supabase/schema.sql
+```
+
+If you do use the Supabase CLI, [`supabase/config.toml`](supabase/config.toml) links this repo to
+CLI commands (`supabase link`, `supabase db diff --linked`, `supabase functions deploy --all`) —
+it's optional and does nothing if you never install the CLI.
 
 ### Running the app
 
@@ -100,7 +186,7 @@ You can run on a physical Android device or an Android emulator.
 Flutter will detect a connected device or running emulator automatically. If
 more than one is available, it will let you choose.
 
-### 6. Making changes
+### Making changes
 
 Hot reload is enabled while `flutter run` is active. Save a file and press
 `r` in the terminal to reload, or `R` for a full restart.

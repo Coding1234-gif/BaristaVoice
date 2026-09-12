@@ -114,6 +114,7 @@ interface LlmToolResult {
   reply: string;
   needsClarification: boolean;
   order: { items: OrderItemIn[] };
+  mentionedItemIds?: string[];
 }
 
 const FALLBACK_REPLY =
@@ -128,6 +129,19 @@ Customers speak to you naturally. Your job each turn is to:
 1. Understand what they want (a question, an item to add, a change, a removal, or a confirmation).
 2. Reply the way a real barista would: warm, brief, natural — not robotic.
 3. Call the ${TOOL_NAME} tool with the FULL, correct order state after applying any change.
+
+Reply length — this is spoken out loud to someone standing at a counter, not read on a screen, so keep it short:
+- One short sentence. Never more than ~15 words unless the customer explicitly asked for detail (e.g. "what's in the mocha?").
+- Don't repeat the whole order back after every single change — the customer can already see it on screen. Just confirm what changed ("Got it, one oat latte" not "Your order now has one oat latte, would you like anything else with your order today?").
+- No filler pleasantries ("Great choice!", "Wonderful!", "Of course, right away!") — acknowledge and move on.
+- Only read back the full order when the customer actually asks for it or is confirming the whole thing before payment.
+
+Showing items on screen — set mentionedItemIds to the ids of whichever menu items your reply is actually about this turn (recommending, describing, answering a question about, or adding/changing) — the app shows a picture+price card for each one, so this is what makes your answer feel visual, not just spoken:
+- Answering "what's popular?" → every popular item you mention.
+- "Do you have oat milk lattes?" / describing one specific item → just that item.
+- Adding/changing an item in the order → that item.
+- A pure yes/no, a clarifying question, or a reply that isn't about any specific item(s) → empty array.
+- Never list more than 4 — pick the most relevant ones if more would qualify.
 
 Hard rules — never break these:
 - Only ever reference items, sizes, milk options, temperatures, modifiers and decaf availability that literally appear in the MENU json below, matched by id. Never invent a product, option or price.
@@ -181,6 +195,11 @@ function buildGeminiFunctionDeclaration(menu: Menu) {
           },
           required: ["items"],
         },
+        mentionedItemIds: {
+          type: "ARRAY",
+          items: { type: "STRING", enum: itemIds },
+          description: "IDs of menu items this reply is about — see the system prompt's \"Showing items on screen\" rule.",
+        },
       },
       required: ["reply", "needsClarification", "order"],
     },
@@ -226,6 +245,11 @@ function buildOpenAiTool(menu: Menu) {
               },
             },
             required: ["items"],
+          },
+          mentionedItemIds: {
+            type: "array",
+            items: { type: "string", enum: itemIds },
+            description: "IDs of menu items this reply is about — see the system prompt's \"Showing items on screen\" rule.",
           },
         },
         required: ["reply", "needsClarification", "order"],
@@ -388,6 +412,24 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
   return result;
 }
 
+/** Drops any id that isn't a real, current menu item (hallucinated or
+ * stale) and caps the list — same "never trust the LLM's ids blindly"
+ * posture as validateAndEnrich above. */
+function validateMentionedItemIds(ids: string[] | undefined, menu: Menu): string[] {
+  if (!Array.isArray(ids)) return [];
+  const validIds = new Set(menu.items.map((i) => i.id));
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const id of ids) {
+    if (typeof id === "string" && validIds.has(id) && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+      if (result.length >= 4) break;
+    }
+  }
+  return result;
+}
+
 /** Fetches ONE café's published, available products straight from the
  * database (anon key, same RLS a customer's own client is bound by) — the
  * only place this function decides what the AI is even allowed to see.
@@ -492,6 +534,7 @@ Deno.serve(async (req) => {
     }
 
     const validatedItems = validateAndEnrich(result.order?.items ?? [], menu);
+    const mentionedItemIds = validateMentionedItemIds(result.mentionedItemIds, menu);
     timer.mark("validated");
     timer.log();
 
@@ -500,6 +543,7 @@ Deno.serve(async (req) => {
         reply: result.reply ?? FALLBACK_REPLY,
         needsClarification: Boolean(result.needsClarification),
         order: { items: validatedItems, status: currentOrder.status ?? "draft" },
+        mentionedItemIds,
         ...(debugTiming ? { _timing: { requestId, ...timer.summary() } } : {}),
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }

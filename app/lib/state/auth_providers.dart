@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../core/env.dart';
 import '../data/auth/auth_service.dart';
 import '../data/auth/profile.dart';
+import 'billing_providers.dart';
 
 /// Null when Supabase isn't configured yet (see `app/.env.example`) — admin
 /// routes fall back to a "backend not connected" message rather than
@@ -11,7 +12,7 @@ import '../data/auth/profile.dart';
 /// already handles an unconfigured backend.
 final authServiceProvider = Provider<AuthService?>((ref) {
   if (!Env.isSupabaseConfigured) return null;
-  return AuthService(Supabase.instance.client);
+  return AuthService(Supabase.instance.client, ref.watch(subscriptionServiceProvider));
 });
 
 /// Re-emits whenever Supabase's auth state changes, so anything watching

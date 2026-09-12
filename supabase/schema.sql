@@ -813,6 +813,12 @@ grant execute on function public.next_order_number(uuid) to service_role;
 --
 -- ============================================================
 
+-- `create or replace function` cannot change a function's return type, so a
+-- database whose deployed version of this function predates a return-type
+-- change would fail to re-run this file. Drop it first so schema.sql stays
+-- idempotent regardless of what's currently deployed.
+drop function if exists public.create_canonical_order(jsonb);
+
 create or replace function public.create_canonical_order(
     payload jsonb
 )
@@ -1550,6 +1556,45 @@ group by
 
 
 -- ============================================================
+-- USEFUL ITEM-SALES VIEW (analytics: top items, daily/weekly trends)
+-- ============================================================
+--
+-- Same security_invoker pattern as order_summary/order_item_totals above —
+-- there is no separate RLS policy on this view itself; row access is still
+-- governed entirely by the underlying order_items/orders RLS policies
+-- (order_items_select_own / orders_select_own), scoped to the caller's own
+-- cafe_id via current_cafe_id(). Denormalizes cafe_id/status/created_at
+-- from the parent order onto each line so the admin dashboard can filter
+-- and bucket sales (by item, by day, by paid-vs-not) in one query instead
+-- of joining client-side.
+-- ============================================================
+
+create or replace view public.order_item_sales
+with (security_invoker = true)
+as
+select
+    oi.id,
+    oi.order_id,
+    oi.menu_item_id,
+    oi.name,
+    oi.quantity,
+    oi.unit_price,
+
+    (
+        oi.quantity * oi.unit_price
+    )::numeric(12,2) as line_total,
+
+    o.cafe_id,
+    o.status as order_status,
+    o.created_at as order_created_at
+
+from public.order_items oi
+
+join public.orders o
+    on o.id = oi.order_id;
+
+
+-- ============================================================
 -- COMMENTS
 -- ============================================================
 
@@ -1567,6 +1612,9 @@ comment on table public.orders is
 
 comment on table public.order_items is
 'Individual canonical order lines with optional resolved POS product IDs.';
+
+comment on view public.order_item_sales is
+'order_items denormalized with their parent order''s cafe_id/status/created_at, for the admin analytics dashboard (top items, daily trends) without a client-side join.';
 
 comment on function public.create_canonical_order(jsonb) is
 'Creates a POS-independent canonical order and resolves canonical menu items to POS products through pos_product_mappings.';

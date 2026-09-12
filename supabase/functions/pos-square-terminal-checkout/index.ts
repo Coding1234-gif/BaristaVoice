@@ -100,15 +100,24 @@ export function authorizeOrderAccess(
 /** Requirement (new): who is calling, in one of three shapes. An absent
  * Authorization header is the kiosk's own, unauthenticated calling
  * convention (see file header) — NOT an error — and is handled distinctly
- * from a present-but-invalid one, which still fails as before. */
+ * from a present-but-invalid one, which still fails as before.
+ *
+ * In practice the Supabase client libraries (this app included — see
+ * supabase_flutter's SupabaseClient._getAuthHeaders()) always attach
+ * `Authorization: Bearer <anon key>` when no user session exists; they never
+ * actually omit the header. So an anon-key bearer is treated the same as no
+ * header at all — it's the only signal an unauthenticated kiosk caller can
+ * ever produce, not a new allowance. */
 export type CallerKind = "service_role" | "anonymous" | "authenticated";
 
 export function classifyCaller(
   authHeader: string | null,
+  anonKey: string | undefined,
   serviceRoleKey: string | undefined,
 ): CallerKind {
   if (!authHeader) return "anonymous";
   if (isTrustedServiceRoleCaller(authHeader, serviceRoleKey)) return "service_role";
+  if (anonKey && authHeader === `Bearer ${anonKey}`) return "anonymous";
   return "authenticated";
 }
 
@@ -241,7 +250,7 @@ export async function handler(req: Request): Promise<Response> {
 
     const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const authHeader = req.headers.get("Authorization");
-    const callerKind = classifyCaller(authHeader, SUPABASE_SERVICE_ROLE_KEY);
+    const callerKind = classifyCaller(authHeader, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY);
 
     // ---------------------------------------------------------------
     // Authorization — only the "authenticated" caller kind needs a

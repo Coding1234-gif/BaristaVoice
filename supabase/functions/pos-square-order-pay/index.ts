@@ -33,12 +33,31 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function isTrustedServiceRoleCaller(
+export function isTrustedServiceRoleCaller(
   authHeader: string,
   serviceRoleKey: string | undefined,
 ): boolean {
   if (!serviceRoleKey) return false;
   return authHeader === `Bearer ${serviceRoleKey}`;
+}
+
+/** Who is calling, in one of three shapes — same split as
+ * pos-square-terminal-checkout's classifyCaller. The kiosk has no customer
+ * login, and the Supabase client libraries (this app's Flutter client
+ * included) always attach `Authorization: Bearer <anon key>` when no user
+ * session exists — they never actually omit the header — so an anon-key
+ * bearer is treated the same as no header at all. */
+export type CallerKind = "service_role" | "anonymous" | "authenticated";
+
+export function classifyCaller(
+  authHeader: string | null,
+  anonKey: string | undefined,
+  serviceRoleKey: string | undefined,
+): CallerKind {
+  if (!authHeader) return "anonymous";
+  if (isTrustedServiceRoleCaller(authHeader, serviceRoleKey)) return "service_role";
+  if (anonKey && authHeader === `Bearer ${anonKey}`) return "anonymous";
+  return "authenticated";
 }
 
 function authorizeOrderAccess(
@@ -111,13 +130,6 @@ export async function handler(req: Request): Promise<Response> {
 
   const authHeader = req.headers.get("Authorization");
 
-  if (!authHeader) {
-    return jsonResponse(
-      { error: "Missing Authorization header." },
-      401,
-    );
-  }
-
   try {
     const body = await req.json();
     const orderId = body?.orderId;
@@ -134,27 +146,31 @@ export async function handler(req: Request): Promise<Response> {
       SUPABASE_SERVICE_ROLE_KEY,
     );
 
-    const trustedCaller = isTrustedServiceRoleCaller(
+    const callerKind = classifyCaller(
       authHeader,
+      SUPABASE_ANON_KEY,
       SUPABASE_SERVICE_ROLE_KEY,
     );
 
     // ---------------------------------------------------------------
-    // Authorization
+    // Authorization — "service_role" (trusted server-to-server caller)
+    // and "anonymous" (the kiosk's own unauthenticated convention — see
+    // classifyCaller) both skip the profile lookup below; only
+    // "authenticated" needs to resolve to a cafe_admin/super_admin.
     // ---------------------------------------------------------------
 
     let callerProfile:
       | { role: string; cafeId: string | null }
       | null = null;
 
-    if (!trustedCaller) {
+    if (callerKind === "authenticated") {
       const callerClient = createClient(
         SUPABASE_URL,
         SUPABASE_ANON_KEY,
         {
           global: {
             headers: {
-              Authorization: authHeader,
+              Authorization: authHeader!,
             },
           },
         },

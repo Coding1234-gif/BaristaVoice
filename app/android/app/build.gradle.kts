@@ -1,7 +1,20 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing — loaded from android/key.properties, which is gitignored
+// and never committed (see that file's own warning comment). Play Store
+// requires every release to be signed with the SAME key going forward, so
+// this keystore/password must be backed up somewhere safe outside git.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
@@ -25,11 +38,28 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = keystoreProperties.getProperty("storeFile")?.let { file(it) }
+                storePassword = keystoreProperties.getProperty("storePassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Falls back to the debug key only when key.properties hasn't been
+            // set up yet (e.g. a fresh checkout on a machine without it) so
+            // `flutter run --release` still works locally — but this build
+            // would NOT be accepted by Play Store as-is; see key.properties.
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
@@ -42,4 +72,10 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // MainActivity is a FlutterFragmentActivity (AppCompatActivity) so
+    // RevenueCat's PaywallView can render — see MainActivity.kt.
+    implementation("androidx.appcompat:appcompat:1.7.0")
 }

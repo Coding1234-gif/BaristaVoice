@@ -9,6 +9,14 @@ class Env {
       dotenv.env['REVENUECAT_API_KEY_ANDROID'] ?? '';
   static String get revenueCatApiKeyIos => dotenv.env['REVENUECAT_API_KEY_IOS'] ?? '';
 
+  /// RevenueCat's Test Store key (the `test_...` key from Project settings
+  /// → API keys → Test Store) — works on any platform, for developing the
+  /// purchase flow before real Play Store/App Store products exist. See
+  /// SubscriptionService.configure(): preferred over the real per-platform
+  /// key whenever it's set, so leaving this blank in production `.env`
+  /// files is what switches the app back to real store purchases.
+  static String get revenueCatApiKeyTest => dotenv.env['REVENUECAT_API_KEY_TEST'] ?? '';
+
   /// Default café this device opens to before any QR/deep link has been
   /// scanned — for a kiosk tablet permanently mounted at one café. Optional;
   /// leave blank for a device meant to be scanned into on first use. Once a
@@ -19,4 +27,7 @@ class Env {
 
   static bool get isSupabaseConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
+
+  static bool get isRevenueCatConfigured =>
+      revenueCatApiKeyAndroid.isNotEmpty || revenueCatApiKeyIos.isNotEmpty;
 }

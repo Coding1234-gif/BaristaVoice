@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../billing/subscription_service.dart';
 import 'profile.dart';
 
 /// Thin wrapper around Supabase Auth + the `profiles` table. This is the
@@ -7,8 +8,9 @@ import 'profile.dart';
 /// than introducing a second one.
 class AuthService {
   final SupabaseClient _client;
+  final SubscriptionService _subscriptions;
 
-  AuthService(this._client);
+  AuthService(this._client, this._subscriptions);
 
   Session? get currentSession => _client.auth.currentSession;
 
@@ -16,11 +18,7 @@ class AuthService {
 
   Future<void> signIn({required String email, required String password}) async {
     await _client.auth.signInWithPassword(email: email, password: password);
-
-    final session = Supabase.instance.client.auth.currentSession;
-
-    print('USER ID: ${session?.user.id}');
-    print('ACCESS TOKEN: ${session?.accessToken}');
+    await _syncSubscriptionIdentity();
   }
 
   /// Signs up a new cafe owner AND provisions their cafe + cafe_admin
@@ -39,10 +37,17 @@ class AuthService {
     // provision the cafe once a session actually exists.
     if (_client.auth.currentSession != null) {
       await _client.rpc('create_cafe_admin_account', params: {'cafe_name': cafeName});
+      await _syncSubscriptionIdentity();
     }
   }
 
-  Future<void> signOut() => _client.auth.signOut();
+  Future<void> signOut() async {
+    // Log out of RevenueCat BEFORE Supabase — on a shared device, the next
+    // sign-in must never briefly see the outgoing admin's subscription
+    // state.
+    await _subscriptions.logOut();
+    await _client.auth.signOut();
+  }
 
   Future<Profile?> fetchCurrentProfile() async {
     final user = _client.auth.currentUser;
@@ -50,5 +55,12 @@ class AuthService {
     final row = await _client.from('profiles').select().eq('id', user.id).maybeSingle();
     if (row == null) return null;
     return Profile.fromJson(row);
+  }
+
+  Future<void> _syncSubscriptionIdentity() async {
+    final userId = _client.auth.currentUser?.id;
+    if (userId != null) {
+      await _subscriptions.logIn(userId);
+    }
   }
 }

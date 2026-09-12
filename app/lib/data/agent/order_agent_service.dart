@@ -10,10 +10,18 @@ class AgentTurnResult {
   final Order order;
   final bool needsClarification;
 
+  /// IDs of menu items this reply is actually about (recommended, described,
+  /// answered a question about, or just added/changed) — never more than 4,
+  /// already filtered server-side to ids that exist on this café's menu.
+  /// Empty for a reply that isn't about any specific item(s). Drives the
+  /// item cards shown below the conversation panel — see MentionedItemsStrip.
+  final List<String> mentionedItemIds;
+
   const AgentTurnResult({
     required this.reply,
     required this.order,
     this.needsClarification = false,
+    this.mentionedItemIds = const [],
   });
 }
 

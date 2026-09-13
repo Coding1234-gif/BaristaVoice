@@ -116,7 +116,7 @@ class _ProductCard extends ConsumerWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      Text('\$${item.basePrice.toStringAsFixed(2)}',
+                      Text('£${item.basePrice.toStringAsFixed(2)}',
                           style: const TextStyle(fontWeight: FontWeight.w700)),
                     ],
                   ),

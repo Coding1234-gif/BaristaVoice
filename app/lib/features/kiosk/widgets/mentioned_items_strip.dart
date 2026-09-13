@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 
 import '../../../models/menu.dart';
 
-final _currency = NumberFormat.simpleCurrency(name: 'USD');
+final _currency = NumberFormat.simpleCurrency(name: 'GBP');
 
 /// Small "what the AI is talking about" cards shown below the conversation
 /// panel — picture, name, price, and a popular badge — so an answer like

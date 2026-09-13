@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../features/admin/admin_shell.dart';
 import '../features/admin/analytics/analytics_screen.dart';
 import '../features/admin/billing/premium_gate.dart';
+import '../features/admin/billing/usage_billing_screen.dart';
 import '../features/admin/dashboard/admin_dashboard_screen.dart';
 import '../features/admin/login/admin_login_screen.dart';
 import '../features/admin/menu/menu_management_screen.dart';
@@ -107,6 +108,11 @@ final routerProvider = Provider<GoRouter>((ref) {
               child: AdminSettingsScreen(),
             ),
           ),
+          // Deep-link target for the Stripe Checkout (setup mode) redirect
+          // — see stripe_billing_repository.dart's stripeSetupSuccessUrl —
+          // as well as the normal nav item. UsageBillingScreen wraps
+          // itself in PremiumGate (same pattern as AnalyticsScreen above).
+          GoRoute(path: '/admin/billing', builder: (context, state) => const UsageBillingScreen()),
         ],
       ),
     ],

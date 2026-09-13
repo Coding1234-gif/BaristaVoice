@@ -139,7 +139,7 @@ export function buildRpcPayload(request: ValidatedOrderRequest): Record<string, 
     cafe_id: request.cafeId,
     idempotency_key: request.idempotencyKey,
     source: "voice",
-    currency: "USD",
+    currency: "GBP",
     items: request.items.map((item) => ({
       menuItemId: item.menuItemId,
       quantity: item.quantity,

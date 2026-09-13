@@ -454,7 +454,7 @@ create table if not exists public.orders (
 
     total numeric(12,2) not null default 0,
 
-    currency text not null default 'USD',
+    currency text not null default 'GBP',
 
     pos_connection_id uuid
         references public.pos_connections(id)
@@ -786,7 +786,7 @@ grant execute on function public.next_order_number(uuid) to service_role;
 -- {
 --   "cafe_id": "...",
 --   "source": "voice",
---   "currency": "USD",
+--   "currency": "GBP",
 --   "pos_connection_id": "...",
 --   "items": [
 --     {
@@ -881,7 +881,7 @@ begin
         coalesce(payload->>'source', 'voice');
 
     v_currency :=
-        coalesce(payload->>'currency', 'USD');
+        coalesce(payload->>'currency', 'GBP');
 
     v_pos_connection_id :=
         nullif(payload->>'pos_connection_id', '')::uuid;
@@ -1618,3 +1618,341 @@ comment on view public.order_item_sales is
 
 comment on function public.create_canonical_order(jsonb) is
 'Creates a POS-independent canonical order and resolves canonical menu items to POS products through pos_product_mappings.';
+
+
+-- ============================================================
+-- STRIPE USAGE BILLING
+-- ============================================================
+--
+-- RevenueCat remains the ONLY thing that ever charges the flat
+-- £79/month subscription (see app/lib/data/billing/subscription_service.dart)
+-- — nothing here creates a second subscription or duplicates that charge.
+-- This section adds a second, independent billing lane: a 5p-per-item
+-- usage charge, invoiced through Stripe once per monthly billing period.
+--
+-- Billing period = calendar month in Europe/London (this app has no
+-- per-cafe timezone column; Europe/London was chosen as a single
+-- consistent zone for all cafes — see cafe_billing_period_bounds()).
+--
+-- Source of truth for "how many items were actually ordered" is always
+-- calculate_cafe_usage() below, re-derived from the same canonical
+-- orders/order_items rows analytics already uses — never a client-
+-- supplied number (see app/lib/data/admin/analytics_insights.dart's
+-- `_paidStatus = 'paid'`, the same definition of "genuinely completed"
+-- this reuses).
+--
+-- ============================================================
+
+
+-- ------------------------------------------------------------
+-- Pre-requisite fix: the orders status check constraint was written
+-- before payment-capture statuses existed. pos-square-order-pay and
+-- pos-square-terminal-checkout already write 'payment_pending',
+-- 'payment_failed', and 'paid' (the actual "this order is genuinely
+-- completed and was paid for" status — see analytics_insights.dart),
+-- and pos-square-order-submit writes 'sending_to_pos'. None of those
+-- were in the constraint below, so on a database where this constraint
+-- was never manually patched, every real payment update would currently
+-- fail. Usage billing depends on 'paid' being a real, reachable status,
+-- so this widens the constraint (additive only — nothing removed, no
+-- existing rows affected).
+-- ------------------------------------------------------------
+
+alter table public.orders
+    drop constraint if exists orders_status_check;
+
+alter table public.orders
+    add constraint orders_status_check
+    check (
+        status in (
+            'draft',
+            'pending',
+            'submitting',
+            'sending_to_pos',
+            'sent_to_pos',
+            'pos_failed',
+            'payment_pending',
+            'payment_failed',
+            'paid',
+            'cancelled'
+        )
+    );
+
+
+-- ============================================================
+-- CAFE BILLING (Stripe customer + payment method state)
+-- ============================================================
+--
+-- One row per cafe. Never holds card numbers/CVCs — only Stripe's own
+-- identifiers, exactly like pos_connections holds a Vault secret ID
+-- rather than a raw Square token. Written only by service-role Edge
+-- Functions (stripe-setup-payment-method, stripe-webhook); cafe admins
+-- get read-only access via RLS below.
+
+create table if not exists public.cafe_billing (
+    id uuid primary key default gen_random_uuid(),
+
+    cafe_id uuid not null unique
+        references public.cafes(id)
+        on delete cascade,
+
+    stripe_customer_id text unique,
+
+    stripe_default_payment_method_id text,
+
+    billing_status text not null default 'no_customer'
+        check (
+            billing_status in (
+                'no_customer',
+                'pending_payment_method',
+                'active',
+                'past_due'
+            )
+        ),
+
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+drop trigger if exists cafe_billing_set_updated_at
+on public.cafe_billing;
+
+create trigger cafe_billing_set_updated_at
+before update on public.cafe_billing
+for each row
+execute function public.set_updated_at();
+
+create index if not exists idx_cafe_billing_cafe_id
+on public.cafe_billing(cafe_id);
+
+
+-- ============================================================
+-- CAFE USAGE (one row per cafe per billing period — the
+-- duplicate-charge guard)
+-- ============================================================
+--
+-- `unique (cafe_id, billing_period_start)` is the actual mechanism that
+-- makes this idempotent: stripe-generate-usage-invoice always tries to
+-- INSERT a row for the period first (ON CONFLICT DO NOTHING) before
+-- talking to Stripe at all, so at most one row — and therefore at most
+-- one Stripe invoice — can ever exist for a given cafe+period, no matter
+-- how many times that function is invoked or retried.
+
+create table if not exists public.cafe_usage (
+    id uuid primary key default gen_random_uuid(),
+
+    cafe_id uuid not null
+        references public.cafes(id)
+        on delete cascade,
+
+    billing_period_start timestamptz not null,
+    billing_period_end timestamptz not null,
+
+    -- Reconciled from calculate_cafe_usage() — never trusted from the
+    -- client. Integer pence throughout; no floating-point money math.
+    item_count integer not null default 0
+        check (item_count >= 0),
+
+    usage_pence integer not null default 0
+        check (usage_pence >= 0),
+
+    status text not null default 'calculated'
+        check (
+            status in (
+                'calculated',
+                'invoiced',
+                'paid',
+                'payment_failed'
+            )
+        ),
+
+    stripe_invoice_id text,
+    stripe_invoice_item_id text,
+
+    calculated_at timestamptz not null default now(),
+    invoiced_at timestamptz,
+    paid_at timestamptz,
+
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+
+    unique (cafe_id, billing_period_start)
+);
+
+drop trigger if exists cafe_usage_set_updated_at
+on public.cafe_usage;
+
+create trigger cafe_usage_set_updated_at
+before update on public.cafe_usage
+for each row
+execute function public.set_updated_at();
+
+create index if not exists idx_cafe_usage_cafe_id
+on public.cafe_usage(cafe_id, billing_period_start desc);
+
+create unique index if not exists idx_cafe_usage_stripe_invoice_id
+on public.cafe_usage(stripe_invoice_id)
+where stripe_invoice_id is not null;
+
+
+-- ============================================================
+-- STRIPE WEBHOOK EVENTS (delivery idempotency ledger)
+-- ============================================================
+--
+-- Stripe does not guarantee exactly-once webhook delivery. The webhook
+-- handler inserts the event id here BEFORE doing anything else
+-- (`on conflict (id) do nothing`); if the insert reports no new row,
+-- this exact event was already processed, so the handler returns 200
+-- immediately without touching billing state again. No RLS policies are
+-- defined for this table — it is never read by client roles, only by
+-- the service-role stripe-webhook function.
+
+create table if not exists public.stripe_webhook_events (
+    id text primary key,
+
+    type text not null,
+
+    cafe_usage_id uuid
+        references public.cafe_usage(id)
+        on delete set null,
+
+    processed_at timestamptz not null default now()
+);
+
+alter table public.stripe_webhook_events enable row level security;
+
+
+-- ============================================================
+-- USAGE RECONCILIATION (source of truth)
+-- ============================================================
+--
+-- Deterministic and reproducible: same cafe_id + period always yields
+-- the same numbers, derived fresh from canonical orders/order_items.
+-- Only counts orders with status = 'paid' — the same "genuinely
+-- completed" definition analytics already uses, so draft/pending/
+-- submitting/sending_to_pos/sent_to_pos/pos_failed/payment_pending/
+-- payment_failed/cancelled orders are all correctly excluded (an order
+-- that failed payment or was never captured never reached 'paid').
+-- Charges by ITEM QUANTITY, not by line/product count — a Latte x1 +
+-- Americano x2 order contributes 3, not 2.
+--
+-- Not reachable by client roles (see revoke below) — only by
+-- service-role Edge Functions. The Flutter app never calls this
+-- directly; it goes through stripe-billing-status, which enforces the
+-- same cafe-scoped authorization every other admin Edge Function uses.
+
+create or replace function public.calculate_cafe_usage(
+    p_cafe_id uuid,
+    p_period_start timestamptz,
+    p_period_end timestamptz
+)
+returns table (
+    item_count bigint,
+    usage_pence bigint,
+    usage_gbp numeric
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select
+        coalesce(sum(oi.quantity), 0) as item_count,
+        coalesce(sum(oi.quantity), 0) * 5 as usage_pence,
+        (coalesce(sum(oi.quantity), 0) * 5 / 100.0)::numeric(12,2) as usage_gbp
+    from public.orders o
+    join public.order_items oi
+        on oi.order_id = o.id
+    where o.cafe_id = p_cafe_id
+      and o.status = 'paid'
+      and o.created_at >= p_period_start
+      and o.created_at < p_period_end;
+$$;
+
+revoke all on function public.calculate_cafe_usage(uuid, timestamptz, timestamptz)
+from public;
+
+grant execute
+on function public.calculate_cafe_usage(uuid, timestamptz, timestamptz)
+to service_role;
+
+
+-- ============================================================
+-- BILLING PERIOD BOUNDS (Europe/London calendar month)
+-- ============================================================
+--
+-- Documents/derives the exact billing-period convention: a half-open
+-- interval [start, end) in UTC, computed from a calendar month in
+-- Europe/London so British Summer Time transitions don't shift which
+-- side of midnight a boundary order lands on. Every order's
+-- created_at (timestamptz, i.e. an absolute instant) falls into
+-- exactly one period.
+
+create or replace function public.cafe_billing_period_bounds(
+    p_month_start_date date
+)
+returns table (
+    period_start timestamptz,
+    period_end timestamptz
+)
+language sql
+immutable
+as $$
+    select
+        (p_month_start_date::timestamp at time zone 'Europe/London') as period_start,
+        ((p_month_start_date + interval '1 month')::timestamp at time zone 'Europe/London') as period_end;
+$$;
+
+revoke all on function public.cafe_billing_period_bounds(date)
+from public;
+
+grant execute
+on function public.cafe_billing_period_bounds(date)
+to service_role;
+
+
+-- ============================================================
+-- BILLING ROW LEVEL SECURITY
+-- ============================================================
+
+alter table public.cafe_billing enable row level security;
+alter table public.cafe_usage enable row level security;
+
+drop policy if exists cafe_billing_select_own
+on public.cafe_billing;
+
+create policy cafe_billing_select_own
+on public.cafe_billing
+for select
+to authenticated
+using (
+    cafe_id = public.current_cafe_id()
+);
+
+drop policy if exists cafe_usage_select_own
+on public.cafe_usage;
+
+create policy cafe_usage_select_own
+on public.cafe_usage
+for select
+to authenticated
+using (
+    cafe_id = public.current_cafe_id()
+);
+
+
+-- ============================================================
+-- BILLING COMMENTS
+-- ============================================================
+
+comment on table public.cafe_billing is
+'One row per cafe: Stripe Customer + default payment method identifiers for the 5p-per-item usage charge. Never holds raw card details.';
+
+comment on table public.cafe_usage is
+'One row per cafe per monthly billing period — unique(cafe_id, billing_period_start) is what guarantees a period is never invoiced twice.';
+
+comment on table public.stripe_webhook_events is
+'Idempotency ledger for Stripe webhook deliveries — Stripe may deliver the same event more than once.';
+
+comment on function public.calculate_cafe_usage(uuid, timestamptz, timestamptz) is
+'Source of truth for billable item usage: SUM(order_items.quantity) across paid orders in the period, at 5p/item. Deterministic and reproducible from canonical orders — never trusts a client-supplied count.';

@@ -169,7 +169,7 @@ class _ProductEditDialogState extends ConsumerState<ProductEditDialog> {
                     Expanded(
                       child: TextFormField(
                         controller: _price,
-                        decoration: const InputDecoration(labelText: 'Price', prefixText: '\$'),
+                        decoration: const InputDecoration(labelText: 'Price', prefixText: '£'),
                         keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         validator: (v) => (v == null || double.tryParse(v.trim()) == null) ? 'Invalid' : null,
                       ),

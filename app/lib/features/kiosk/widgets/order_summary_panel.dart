@@ -5,7 +5,7 @@ import '../../../models/menu.dart';
 import '../../../models/order.dart';
 import '../../../state/kiosk_controller.dart' show PaymentPhase;
 
-final _currency = NumberFormat.simpleCurrency(name: 'USD');
+final _currency = NumberFormat.simpleCurrency(name: 'GBP');
 
 /// Always-visible, always-accurate order state. This is what the customer
 /// trusts, not the transcript.

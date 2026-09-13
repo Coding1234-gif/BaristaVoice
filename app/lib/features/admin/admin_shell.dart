@@ -21,6 +21,7 @@ const _navItems = [
   _NavItem('Analytics', Icons.bar_chart_outlined, '/admin/analytics'),
   _NavItem('Menu', Icons.restaurant_menu_outlined, '/admin/menu'),
   _NavItem('Products', Icons.local_cafe_outlined, '/admin/products'),
+  _NavItem('Billing', Icons.receipt_long_outlined, '/admin/billing'),
   _NavItem('Settings', Icons.settings_outlined, '/admin/settings'),
 ];
 

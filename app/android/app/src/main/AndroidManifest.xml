@@ -26,23 +26,30 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- Café QR/deep link: baristavoice://open/cafe/{cafeId}. `open`
+            <!-- App-wide deep link: baristavoice://open/<any path>. `open`
                  is a fixed, meaningless host — Android's intent-filter data
                  matching only applies pathPrefix when a host is present, and
                  go_router matches purely on the URI path, so the real
-                 "/cafe/{cafeId}" needs to land in the path, not the host
-                 (see CafeLinks in app/lib/core/cafe_links.dart, which builds
-                 this exact URI). A custom scheme needs no domain
-                 verification (unlike https App Links), so this works
-                 immediately without hosting an assetlinks.json — the
-                 tradeoff is the OS won't offer this app for a plain
-                 https://.../cafe/{id} link unless App Links are configured
-                 separately later. -->
+                 destination needs to land in the path, not the host. A
+                 custom scheme needs no domain verification (unlike https
+                 App Links), so this works immediately without hosting an
+                 assetlinks.json — the tradeoff is the OS won't offer this
+                 app for a plain https://.../whatever link unless App Links
+                 are configured separately later.
+                 No pathPrefix is set (deliberately, as of the Stripe usage
+                 billing setup flow) so this one intent-filter matches ANY
+                 path under the "open" host — both the café QR/deep link
+                 (baristavoice://open/cafe/{cafeId}, see CafeLinks in
+                 app/lib/core/cafe_links.dart) and the Stripe Checkout
+                 setup-mode success/cancel redirect
+                 (baristavoice://open/admin/billing, see
+                 stripe_billing_repository.dart), and anything added later,
+                 without needing a second <data> element per destination. -->
             <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="baristavoice" android:host="open" android:pathPrefix="/cafe"/>
+                <data android:scheme="baristavoice" android:host="open"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

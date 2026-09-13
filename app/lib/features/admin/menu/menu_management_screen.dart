@@ -154,7 +154,7 @@ class _DraftRow extends ConsumerWidget {
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10)),
       child: ListTile(
         title: Text(item.name),
-        subtitle: Text('${item.category} · \$${item.basePrice.toStringAsFixed(2)}'),
+        subtitle: Text('${item.category} · £${item.basePrice.toStringAsFixed(2)}'),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

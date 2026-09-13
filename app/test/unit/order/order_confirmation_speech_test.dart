@@ -44,7 +44,7 @@ void main() {
 
     final speech = buildOrderConfirmationSpeech(order, menu);
 
-    expect(speech, 'Just to confirm: Chocolate Croissant. Your total is \$3.50. Is that correct?');
+    expect(speech, 'Just to confirm: Chocolate Croissant. Your total is £3.50. Is that correct?');
   });
 
   test('includes size, milk, and quantity for a customized drink', () {
@@ -62,7 +62,7 @@ void main() {
 
     expect(speech, contains('2 Cappuccino with Large, Oat milk'));
     // (4.0 base + 1.0 large + 0.5 oat) * 2 = 11.00
-    expect(speech, contains('\$11.00'));
+    expect(speech, contains('£11.00'));
   });
 
   test('includes a special request verbatim', () {

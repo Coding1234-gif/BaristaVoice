@@ -3,7 +3,7 @@ import 'package:intl/intl.dart';
 import '../../models/menu.dart';
 import '../../models/order.dart';
 
-final _currencyFormat = NumberFormat.simpleCurrency(name: 'USD');
+final _currencyFormat = NumberFormat.simpleCurrency(name: 'GBP');
 
 /// Builds a spoken order confirmation directly from the structured [order]
 /// and [menu] — never from anything the LLM said — so the spoken summary

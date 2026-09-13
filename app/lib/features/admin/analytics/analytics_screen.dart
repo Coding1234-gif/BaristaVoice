@@ -10,7 +10,7 @@ import '../../../state/admin_providers.dart';
 import '../billing/premium_gate.dart';
 import '../widgets/admin_states.dart';
 
-final _currency = NumberFormat.simpleCurrency(name: 'USD');
+final _currency = NumberFormat.simpleCurrency(name: 'GBP');
 
 /// The café-facing analytics dashboard: paid revenue/orders over the last
 /// `analyticsWindowDays` days, top sellers, and a handful of plain-English

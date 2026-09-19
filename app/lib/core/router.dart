@@ -12,6 +12,7 @@ import '../features/admin/dashboard/admin_dashboard_screen.dart';
 import '../features/admin/login/admin_login_screen.dart';
 import '../features/admin/menu/menu_management_screen.dart';
 import '../features/admin/menu/menu_upload_screen.dart';
+import '../features/admin/orders/live_orders_screen.dart';
 import '../features/admin/products/products_screen.dart';
 import '../features/admin/settings/admin_settings_screen.dart';
 import '../features/kiosk/cafe_entry_screen.dart';
@@ -75,6 +76,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           // non-paying café can sign in and look around but can't upload a
           // menu, edit products, see their QR code, or view analytics.
           GoRoute(path: '/admin', builder: (context, state) => const AdminDashboardScreen()),
+          GoRoute(path: '/admin/orders', builder: (context, state) => const LiveOrdersScreen()),
           GoRoute(path: '/admin/analytics', builder: (context, state) => const AnalyticsScreen()),
           GoRoute(
             path: '/admin/menu',

@@ -6,6 +6,8 @@ import '../data/admin/analytics_insights.dart';
 import '../data/admin/analytics_models.dart';
 import '../data/admin/analytics_repository.dart';
 import '../data/admin/cafe_admin_repository.dart';
+import '../data/admin/live_orders_models.dart';
+import '../data/admin/live_orders_repository.dart';
 import '../data/admin/pos_mapping_repository.dart';
 import '../data/auth/profile.dart';
 import 'auth_providers.dart';
@@ -20,6 +22,10 @@ final posMappingRepositoryProvider = Provider<PosMappingRepository>((ref) {
 
 final analyticsRepositoryProvider = Provider<AnalyticsRepository>((ref) {
   return AnalyticsRepository(Supabase.instance.client);
+});
+
+final liveOrdersRepositoryProvider = Provider<LiveOrdersRepository>((ref) {
+  return LiveOrdersRepository(Supabase.instance.client);
 });
 
 /// The cafe currently being managed. For a cafe_admin this is always their
@@ -75,6 +81,12 @@ const analyticsWindowDays = 30;
 /// insights it won't use.
 final orderSummariesProvider = FutureProvider<List<OrderSummaryRow>>((ref) async {
   final cafeId = ref.watch(activeCafeIdProvider);
+  // Watched only as a re-run trigger (its value is unused): this provider is
+  // a one-shot fetch that Riverpod caches forever, so without this a new or
+  // newly-paid order never reached Analytics until the app was reloaded. Every
+  // emission of the realtime orders feed — a new order, or its status moving
+  // to 'paid' — now re-queries the analytics views.
+  ref.watch(liveOrdersProvider);
   if (cafeId == null) return <OrderSummaryRow>[];
   final since = DateTime.now().subtract(const Duration(days: analyticsWindowDays));
   return ref.watch(analyticsRepositoryProvider).getOrderSummaries(cafeId: cafeId, since: since);
@@ -82,6 +94,7 @@ final orderSummariesProvider = FutureProvider<List<OrderSummaryRow>>((ref) async
 
 final itemSalesProvider = FutureProvider<List<ItemSaleRow>>((ref) async {
   final cafeId = ref.watch(activeCafeIdProvider);
+  ref.watch(liveOrdersProvider); // re-run trigger only — see orderSummariesProvider
   if (cafeId == null) return <ItemSaleRow>[];
   final since = DateTime.now().subtract(const Duration(days: analyticsWindowDays));
   return ref.watch(analyticsRepositoryProvider).getItemSales(cafeId: cafeId, since: since);
@@ -95,4 +108,23 @@ final analyticsInsightsProvider = FutureProvider((ref) async {
   final orders = await ref.watch(orderSummariesProvider.future);
   final items = await ref.watch(itemSalesProvider.future);
   return AnalyticsInsights.compute(orders: orders, items: items, now: DateTime.now());
+});
+
+/// Realtime feed behind the Live Orders screen — unlike the FutureProviders
+/// above, this stays open and pushes new orders/status changes as Postgres
+/// emits them, rather than needing a manual invalidate after a mutation.
+final liveOrdersProvider = StreamProvider<List<LiveOrder>>((ref) {
+  final cafeId = ref.watch(activeCafeIdProvider);
+  if (cafeId == null) return const Stream.empty();
+  return ref.watch(liveOrdersRepositoryProvider).watchLiveOrders(cafeId);
+});
+
+/// The Overview screen's "today" stats — a pure computation over whatever
+/// [liveOrdersProvider] already has loaded, not a separate query. Null while
+/// that feed is still loading/errored; the Overview screen falls back to its
+/// menu-only stats in that case rather than blocking on this.
+final todaysOverviewProvider = Provider<TodaysOverview?>((ref) {
+  final orders = ref.watch(liveOrdersProvider).valueOrNull;
+  if (orders == null) return null;
+  return TodaysOverview.compute(orders, DateTime.now());
 });

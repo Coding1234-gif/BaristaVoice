@@ -141,6 +141,46 @@ policy = "per_worker"
 inspector_port = 8083
 deno_version = 2
 
+# ---------------------------------------------------------------------------
+# Per-function JWT verification (added 2026-09-19).
+#
+# These five are the kiosk's anonymous, customer-facing endpoints — there is
+# no customer login in this app, and every one of them is written to accept a
+# call with NO Authorization header at all (see each function's own header
+# comment; pos-square-* treat "no header" as classifyCaller() === "anonymous").
+#
+# Why this must be false: the app now uses a new-format `sb_publishable_...`
+# API key, which is not a JWT. supabase-dart 2.16 deliberately does NOT send a
+# new-format key as `Authorization: Bearer` for Edge Function calls when nobody
+# is signed in (AuthHttpClient omitNewApiKeyAsBearer, hard-coded true for
+# functions), so an anonymous kiosk call arrives with no Authorization header
+# and the gateway's JWT check answers "Missing authorization header" before the
+# function ever runs. Supabase's own guidance for new API keys is to deploy
+# such functions with --no-verify-jwt and do authorization in code — which
+# these already do (unguessable order ids, everything sensitive resolved
+# server-side from the `orders` row).
+#
+# `supabase functions deploy` RESETS verify_jwt to true unless it's set here
+# (or --no-verify-jwt is passed), so this must live in config.toml, not just
+# in a one-off flag. Admin functions (menu-extractor, mark-order-complete,
+# stripe-*, menu-square-sync, pos-square-sync, pos-square-order-submit) are
+# deliberately NOT listed: they require a signed-in admin's real session JWT.
+# ---------------------------------------------------------------------------
+[functions.create-order]
+verify_jwt = false
+
+[functions.order-agent]
+verify_jwt = false
+
+[functions.tts-speak]
+verify_jwt = false
+
+[functions.pos-square-terminal-checkout]
+verify_jwt = false
+
+[functions.pos-square-order-pay]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

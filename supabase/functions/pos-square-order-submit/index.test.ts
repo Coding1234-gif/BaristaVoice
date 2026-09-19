@@ -14,6 +14,7 @@ import {
   authorizeOrderAccess,
   buildSquareCreateOrderPayload,
   dollarsToCents,
+  ELIGIBLE_STATUSES,
   InvalidMappingError,
   isTrustedServiceRoleCaller,
   type ModifierCatalogLookup,
@@ -24,6 +25,24 @@ import {
   submitOrderToSquare,
   UnmappedProductError,
 } from "./index.ts";
+
+// ---------------------------------------------------------------------------
+// ELIGIBLE_STATUSES — regression guard for a real bug (confirmed live
+// 2026-09-18): this used to be ["confirmed", "pos_failed"], but 'confirmed'
+// has never been a legal orders.status value (see the live
+// orders_status_check constraint in schema.sql), while create_canonical_order()
+// always inserts a fresh order as 'pending'. So every newly-created order
+// was rejected outright — "Order is not eligible for POS submission
+// (status: pending)" — and never actually reached Square.
+// ---------------------------------------------------------------------------
+
+Deno.test("ELIGIBLE_STATUSES: includes 'pending' (what a freshly created order actually is)", () => {
+  assert(ELIGIBLE_STATUSES.includes("pending"));
+});
+
+Deno.test("ELIGIBLE_STATUSES: does NOT include 'confirmed' (never a legal orders.status value)", () => {
+  assert(!ELIGIBLE_STATUSES.includes("confirmed"));
+});
 
 // ---------------------------------------------------------------------------
 // Fixtures: a two-item order (Latte with a resolved modifier + an ad-hoc

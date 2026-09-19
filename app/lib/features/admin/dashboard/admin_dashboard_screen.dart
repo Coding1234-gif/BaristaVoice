@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/admin_theme.dart';
 import '../../../data/admin/admin_models.dart';
+import '../../../data/admin/live_orders_models.dart';
 import '../../../state/admin_providers.dart';
 import '../widgets/admin_states.dart';
 import '../widgets/status_badge.dart';
@@ -60,6 +61,8 @@ class _DashboardBody extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const _TodaysOverviewSection(),
+          const SizedBox(height: 20),
           Wrap(
             spacing: 16,
             runSpacing: 16,
@@ -141,6 +144,148 @@ class _DashboardBody extends ConsumerWidget {
     if (day == today) return 'Today';
     if (day == today.subtract(const Duration(days: 1))) return 'Yesterday';
     return DateFormat.yMMMd().format(localDt);
+  }
+}
+
+/// Today's order/revenue snapshot — the thing a judge actually wants to see
+/// on Overview. Derived from [todaysOverviewProvider], which itself just
+/// reads whatever the Live Orders realtime feed already has loaded, so this
+/// section updates live as orders come in without its own polling.
+class _TodaysOverviewSection extends ConsumerWidget {
+  const _TodaysOverviewSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final overview = ref.watch(todaysOverviewProvider);
+    final currency = NumberFormat.simpleCurrency(name: 'GBP');
+
+    if (overview == null) {
+      return const Card(child: Padding(padding: EdgeInsets.all(24), child: AdminLoadingState()));
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            _StatCard(label: "Today's orders", value: '${overview.orderCount}', icon: Icons.receipt_long_outlined),
+            _StatCard(
+              label: "Today's revenue",
+              value: currency.format(overview.revenue),
+              icon: Icons.payments_outlined,
+            ),
+            _StatCard(
+              label: 'Average order value',
+              value: currency.format(overview.averageOrderValue),
+              icon: Icons.trending_up,
+            ),
+            _StatCard(
+              label: 'BaristaVoice orders',
+              value: '${overview.voiceOrderCount}',
+              icon: Icons.mic_none_outlined,
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: _PopularProductsCard(products: overview.popularProducts)),
+            const SizedBox(width: 16),
+            Expanded(child: _RecentOrdersCard(orders: overview.recentOrders)),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _PopularProductsCard extends StatelessWidget {
+  final List<PopularProduct> products;
+  const _PopularProductsCard({required this.products});
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Popular today', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+            const SizedBox(height: 12),
+            if (products.isEmpty)
+              const Text('No paid orders yet today.', style: TextStyle(color: Colors.black54, fontSize: 13))
+            else
+              for (final p in products)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Expanded(child: Text(p.name, overflow: TextOverflow.ellipsis)),
+                      Text('× ${p.quantity}', style: const TextStyle(color: Colors.black54)),
+                    ],
+                  ),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RecentOrdersCard extends StatelessWidget {
+  final List<LiveOrder> orders;
+  const _RecentOrdersCard({required this.orders});
+
+  @override
+  Widget build(BuildContext context) {
+    final currency = NumberFormat.simpleCurrency(name: 'GBP');
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Recent orders', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                ),
+                TextButton(onPressed: () => context.go('/admin/orders'), child: const Text('View all')),
+              ],
+            ),
+            if (orders.isEmpty)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text('No orders yet.', style: TextStyle(color: Colors.black54, fontSize: 13)),
+              )
+            else
+              for (final o in orders)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Row(
+                    children: [
+                      Text('#${o.orderNumber}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          o.isCompleted ? 'Completed' : o.status,
+                          style: const TextStyle(color: Colors.black54, fontSize: 12),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      Text(currency.format(o.total), style: const TextStyle(fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

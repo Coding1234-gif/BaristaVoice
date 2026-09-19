@@ -53,6 +53,9 @@ class _AnalyticsDashboard extends ConsumerWidget {
         ],
       ),
       body: insightsAsync.when(
+        // The providers re-run on every live order event; keep showing the
+        // last numbers while they reload instead of flashing a spinner.
+        skipLoadingOnReload: true,
         loading: () => const AdminLoadingState(),
         error: (e, _) => AdminErrorState(
           message: 'Could not load analytics: $e',

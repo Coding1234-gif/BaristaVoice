@@ -308,7 +308,18 @@ interface RequestBody {
   orderId: string;
 }
 
-const ELIGIBLE_STATUSES = ["confirmed", "pos_failed"];
+// BUG FIX (confirmed live 2026-09-18): this used to be
+// ["confirmed", "pos_failed"] — but 'confirmed' has never been a legal
+// value at all (see the live orders_status_check constraint in
+// schema.sql: draft/pending/submitting/sending_to_pos/sent_to_pos/
+// pos_failed/payment_pending/payment_failed/paid/cancelled — no
+// 'confirmed'). create_canonical_order() always inserts a fresh order as
+// 'pending', so ELIGIBLE_STATUSES rejected every single newly-created
+// order outright with "Order is not eligible for POS submission
+// (status: pending)" and never touched the row — exactly matching two
+// orders observed stuck at 'pending' with pos_provider/last_pos_error
+// still null (i.e. this function bailed before writing anything).
+export const ELIGIBLE_STATUSES = ["pending", "pos_failed"];
 
 export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {

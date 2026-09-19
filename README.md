@@ -40,6 +40,14 @@ git clone https://github.com/Coding1234-gif/BaristaVoice.git
    `pos-square-order-pay`, `pos-square-terminal-checkout`), pasting in that folder's `index.ts`. (If
    you do use the Supabase CLI instead, `supabase functions deploy --all` does all of them in one
    command — see [`supabase/config.toml`](supabase/config.toml)'s header comment.)
+
+   **JWT verification:** the five kiosk-facing functions (`create-order`, `order-agent`, `tts-speak`,
+   `pos-square-terminal-checkout`, `pos-square-order-pay`) must have JWT verification **off** — the
+   kiosk has no login, and with a new-format `sb_publishable_…` API key the Dart client sends no
+   `Authorization` header for signed-out calls, so the gateway rejects them with *"Missing
+   authorization header"*. The CLI reads this from `config.toml` (`[functions.<name>] verify_jwt =
+   false`, already set); if you deploy from the Dashboard instead, switch **Verify JWT** off in each
+   of those five functions' settings. Leave it on for the admin functions.
 4. Under **Edge Functions → Secrets** (shared across all functions), set:
    - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` — Project Settings → API.
    - `LLM_PROVIDER` (`gemini` or `groq`) and `LLM_API_KEY` — that provider's key.

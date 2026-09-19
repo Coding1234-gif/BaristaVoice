@@ -194,6 +194,18 @@ class KioskController extends StateNotifier<KioskState> {
     this._cafeId,
   ) : super(const KioskState());
 
+  /// Speaks `text` AND shows it as the "Barista" line in [ConversationPanel]
+  /// — unlike an LLM turn (see `_submitTranscript`), every deterministic
+  /// message in this controller (order confirmed, payment prompts, errors)
+  /// used to only call `_tts.speak()` directly, so it played as audio but
+  /// never appeared on screen (confirmed live 2026-09-18: "Great! We'll get
+  /// started on that right away" was heard but never shown). Every such
+  /// message must go through this instead of calling `_tts.speak` directly.
+  void _say(String text) {
+    state = state.copyWith(assistantReply: text);
+    unawaited(_tts.speak(text));
+  }
+
   /// Spends the "Start Order" tap's user gesture on unlocking audio
   /// playback (see `TtsPlaybackController.unlockAudio`), then reveals the
   /// normal ordering UI. Safe to call more than once — only the first call
@@ -385,7 +397,7 @@ class KioskController extends StateNotifier<KioskState> {
   void beginOrderReview() {
     if (state.order.isEmpty || state.isReviewingOrder) return;
     state = state.copyWith(isReviewingOrder: true);
-    unawaited(_tts.speak(buildOrderConfirmationSpeech(state.order, _menu)));
+    _say(buildOrderConfirmationSpeech(state.order, _menu));
   }
 
   /// Customer said "no" / tapped "keep editing" — back to normal ordering,
@@ -435,7 +447,7 @@ class KioskController extends StateNotifier<KioskState> {
       if (result.sentToPos) {
         unawaited(_beginPayment(result.orderId));
       } else {
-        unawaited(_tts.speak(buildOrderConfirmedSpeech(result.posStatus)));
+        _say(buildOrderConfirmedSpeech(result.posStatus));
       }
     } catch (_) {
       // The order was NOT created — leave the order itself untouched (still
@@ -446,7 +458,7 @@ class KioskController extends StateNotifier<KioskState> {
         isReviewingOrder: false,
         errorMessage: orderConfirmationFailedSpeech,
       );
-      unawaited(_tts.speak(orderConfirmationFailedSpeech));
+      _say(orderConfirmationFailedSpeech);
     }
   }
 
@@ -471,12 +483,12 @@ class KioskController extends StateNotifier<KioskState> {
           ? e.message
           : 'Could not start payment. Please try again.';
       state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
-      unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+      _say(buildPaymentFailedSpeech(message));
       return;
     }
 
     state = state.copyWith(paymentPhase: PaymentPhase.awaitingPayment);
-    unawaited(_tts.speak(paymentPendingSpeech));
+    _say(paymentPendingSpeech);
     _startPollingForPayment(orderId);
   }
 
@@ -498,14 +510,14 @@ class KioskController extends StateNotifier<KioskState> {
             ? e.message
             : 'Could not confirm payment. Please try again.';
         state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
-        unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+        _say(buildPaymentFailedSpeech(message));
         return;
       }
 
       if (result.paid) {
         timer.cancel();
         state = state.copyWith(paymentPhase: PaymentPhase.paid);
-        unawaited(_tts.speak(paymentSucceededSpeech));
+        _say(paymentSucceededSpeech);
         return;
       }
 
@@ -513,7 +525,7 @@ class KioskController extends StateNotifier<KioskState> {
         timer.cancel();
         const message = 'That took too long. Please try again.';
         state = state.copyWith(paymentPhase: PaymentPhase.failed, paymentError: message);
-        unawaited(_tts.speak(buildPaymentFailedSpeech(message)));
+        _say(buildPaymentFailedSpeech(message));
       }
     });
   }

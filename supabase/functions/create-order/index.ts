@@ -2,11 +2,10 @@
 //
 //   Kiosk confirm tap
 //           v
-//   create-order (this file)
-//           v
-//   create_canonical_order() — the sole pricing/validation authority,
-//   implemented as a Postgres function (see schema.sql) so every price is
-//   computed in the same transaction as the writes that use it
+//   create-order (this file) — resolves each item's authoritative unit
+//   price from menu_items (resolveUnitPrices/computeUnitPrice below), then
+//   calls create_canonical_order() to validate the selections and write the
+//   order inside one transaction
 //           v
 //   orders / order_items / order_item_modifiers
 //           v
@@ -15,14 +14,28 @@
 //           v
 //   explicit { orderId, orderStatus, total, pos: {...} } response
 //
-// This file is deliberately thin: it does request-shape checking, calls the
-// database function that does the real validation/pricing/writing, and then
-// relays to the existing Square submission function. It does NOT itself
-// decide whether an item/option/price is valid — that decision, and the
-// database writes that follow from it, live entirely in
-// create_canonical_order() so there is exactly one place that can get it
-// wrong, and it's the one place that already has the menu data in front of
-// it inside a transaction.
+// CORRECTED 2026-09-18: this file's original header (and
+// create_canonical_order()'s own doc comment in schema.sql, still stale)
+// claimed the Postgres function was "the sole pricing authority... every
+// price is computed in the same transaction." In reality
+// create_canonical_order() only ever trusts whatever `unit_price` arrives
+// in its payload (defaulting to 0) — it never looks up menu_items itself.
+// Confirmed live 2026-09-18: every order was totaling £0.00 as a result.
+// So pricing is computed HERE instead, from real menu_items data, before
+// the RPC is ever called — never from anything the client sent (RawOrderItem
+// has no price field at all). create_canonical_order() remains the
+// authority for everything else: item/menu-item validity, POS mapping,
+// idempotency, and the actual writes.
+//
+// This file still does request-shape checking, price resolution, calls the
+// database function that validates/writes, and relays to the existing
+// Square submission function.
+//
+// ALSO FIXED 2026-09-18 (see extractOrderRow below): the RPC result was
+// being read as `orderRow.order_id`, a column that has never existed —
+// create_canonical_order() is declared `RETURNS orders`, so the row's PK
+// column is `id`. Every successful order creation was being reported back
+// to the kiosk as "Could not create the order. Please try again."
 //
 // Callable two ways, matching order-agent (this is a customer-facing
 // endpoint, not an admin one): no Authorization/JWT is required — any caller
@@ -59,6 +72,14 @@ function jsonResponse(body: unknown, status = 200) {
 
 export interface RawOrderItem {
   menuItemId?: unknown;
+  // BUG FIX (confirmed live 2026-09-18): this field didn't exist here at
+  // all, even though the Dart client always sends it (OrderItem.toJson()'s
+  // 'name'). buildRpcPayload had nothing to forward, so create_canonical_order()
+  // always fell back to '' — every order_items.name was empty, which
+  // pos-square-order-submit then used both for its own error messages
+  // ("No POS mapping found for \"\"") and as the actual line-item name it
+  // would send to Square's Orders API.
+  name?: unknown;
   quantity?: unknown;
   size?: unknown;
   milk?: unknown;
@@ -113,6 +134,9 @@ export function validateRequestShape(body: CreateOrderRequestBody): ShapeValidat
     if (!isNonEmptyString(item.menuItemId)) {
       return { ok: false, error: "Each order item must have a menuItemId." };
     }
+    if (!isNonEmptyString(item.name)) {
+      return { ok: false, error: "Each order item must have a name." };
+    }
     if (
       typeof item.quantity !== "number" ||
       !Number.isFinite(item.quantity) ||
@@ -132,27 +156,144 @@ export function validateRequestShape(body: CreateOrderRequestBody): ShapeValidat
 
 /** Shapes one validated item into the payload create_canonical_order()
  * expects (snake_case keys, matching the Postgres function's `payload`
- * parameter). No price of any kind is included — the contract this function
- * reads has no price field to smuggle one into. */
-export function buildRpcPayload(request: ValidatedOrderRequest): Record<string, unknown> {
+ * parameter). `unitPrices` must be aligned by index with `request.items` —
+ * see resolveUnitPrices, the only thing allowed to produce these numbers.
+ * A price is never read from the client request itself: RawOrderItem has no
+ * price field at all, so there is nothing to smuggle one through even from
+ * a manipulated request body. */
+export function buildRpcPayload(
+  request: ValidatedOrderRequest,
+  unitPrices: number[],
+): Record<string, unknown> {
   return {
     cafe_id: request.cafeId,
     idempotency_key: request.idempotencyKey,
     source: "voice",
     currency: "GBP",
-    items: request.items.map((item) => ({
-      menuItemId: item.menuItemId,
+    items: request.items.map((item, i) => ({
+      menu_item_id: item.menuItemId,
+      name: typeof item.name === "string" ? item.name : "",
       quantity: item.quantity,
+      unit_price: unitPrices[i] ?? 0,
+      // create_canonical_order() reads each modifier as an OBJECT
+      // (`v_modifier->>'name'`); sending bare strings made every modifier
+      // name fall back to 'Modifier' (confirmed live 2026-09-19).
+      // price_adjustment is deliberately 0: unit_price above already
+      // includes every modifier's delta, and pos-square-order-submit sends
+      // each modifier's price to Square ON TOP of the line's base price —
+      // a non-zero value here would double-charge in Square.
+      modifiers: (Array.isArray(item.modifiers)
+        ? item.modifiers.filter((m): m is string => typeof m === "string")
+        : []
+      ).map((name) => ({ name, price_adjustment: 0 })),
+      // size/milk/temperature/decaf/specialRequest used to sit at the top
+      // level of this object, where the RPC never reads them — so a "large
+      // oat latte, decaf" was stored as just "Latte". The RPC does persist
+      // an item's `metadata` jsonb into order_items.metadata, so they live
+      // there (no effect on pricing or on what's sent to Square).
+      metadata: {
+        size: typeof item.size === "string" ? item.size : null,
+        milk: typeof item.milk === "string" ? item.milk : null,
+        temperature: typeof item.temperature === "string" ? item.temperature : null,
+        decaf: item.decaf === true,
+        specialRequest: typeof item.specialRequest === "string" ? item.specialRequest : null,
+      },
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Server-side pricing — create_canonical_order() itself just trusts
+// whatever `unit_price` arrives in the payload (defaulting to 0 if absent),
+// it does NOT look up menu_items itself. So THIS file is the actual
+// pricing authority in practice, not the database function — this is where
+// a price must be computed from real menu data, never from anything the
+// client sent. Mirrors OrderItem.unitPrice() in app/lib/models/order.dart
+// exactly: base price + the matched size/milk delta + every matched
+// modifier's delta. temperature/decaf/specialRequest never affect price.
+// ---------------------------------------------------------------------------
+
+export interface MenuItemPricingData {
+  basePrice: number;
+  sizes?: { name: string; priceDelta: number }[];
+  milkOptions?: { name: string; priceDelta: number }[];
+  modifiers?: { name: string; priceDelta: number }[];
+}
+
+export function computeUnitPrice(
+  menuItem: MenuItemPricingData,
+  selection: { size?: string | null; milk?: string | null; modifiers?: string[] },
+): number {
+  let price = menuItem.basePrice;
+
+  if (selection.size) {
+    const match = menuItem.sizes?.find((s) => s.name === selection.size);
+    if (match) price += match.priceDelta;
+  }
+  if (selection.milk) {
+    const match = menuItem.milkOptions?.find((m) => m.name === selection.milk);
+    if (match) price += match.priceDelta;
+  }
+  for (const modName of selection.modifiers ?? []) {
+    const match = menuItem.modifiers?.find((m) => m.name === modName);
+    if (match) price += match.priceDelta;
+  }
+
+  // Avoid float artifacts like 3.7000000000000006 reaching a numeric(12,2)
+  // column — cosmetic here since Postgres would round it anyway, but keeps
+  // the value this function returns sane on its own terms.
+  return Math.round(price * 100) / 100;
+}
+
+/** Resolves the authoritative unit price for every item in `items`, aligned
+ * by index. `fetchMenuItems` is injected (rather than this function taking
+ * a Supabase client directly) so the pricing math above is exercised by a
+ * real unit test without a live database — same DI pattern as submitToPos's
+ * `fetchImpl`. An item whose menu_item_id isn't returned by the fetch (not
+ * found, wrong café, inactive) prices at 0; that's safe because
+ * create_canonical_order() itself rejects that item with a clear error
+ * before the price would ever be used. */
+export async function resolveUnitPrices(
+  items: RawOrderItem[],
+  fetchMenuItems: (ids: string[]) => Promise<{ id: string; data: MenuItemPricingData }[]>,
+): Promise<number[]> {
+  const ids = [...new Set(items.map((i) => i.menuItemId as string))];
+  const rows = await fetchMenuItems(ids);
+  const byId = new Map(rows.map((r) => [r.id, r.data]));
+
+  return items.map((item) => {
+    const menuItem = byId.get(item.menuItemId as string);
+    if (!menuItem) return 0;
+    return computeUnitPrice(menuItem, {
       size: typeof item.size === "string" ? item.size : null,
       milk: typeof item.milk === "string" ? item.milk : null,
-      temperature: typeof item.temperature === "string" ? item.temperature : null,
-      decaf: item.decaf === true,
       modifiers: Array.isArray(item.modifiers)
         ? item.modifiers.filter((m): m is string => typeof m === "string")
         : [],
-      specialRequest: typeof item.specialRequest === "string" ? item.specialRequest : null,
-    })),
-  };
+    });
+  });
+}
+
+export interface CanonicalOrderRow {
+  id: string;
+  status: string;
+  total: number;
+}
+
+/** Normalizes the RPC's return value into a typed row, or null if it's
+ * missing/malformed. Postgrest wraps a single composite-row RPC result in a
+ * one-element array, so both shapes are accepted here. IMPORTANT: the row's
+ * primary key column is `id` — create_canonical_order() is declared
+ * `RETURNS orders` (the whole table row), not a custom `order_id` column.
+ * Confirmed live 2026-09-18: an earlier version of this file checked
+ * `orderRow.order_id`, which never existed, so a SUCCESSFUL order creation
+ * was being reported back to the kiosk as "Could not create the order." */
+export function extractOrderRow(rpcRows: unknown): CanonicalOrderRow | null {
+  const row = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
+  if (!row || typeof row !== "object") return null;
+  const r = row as Record<string, unknown>;
+  if (typeof r.id !== "string" || typeof r.status !== "string") return null;
+  return { id: r.id, status: r.status, total: Number(r.total) };
 }
 
 /** Postgres errors raised by create_canonical_order() (validation failures,
@@ -225,7 +366,7 @@ export async function submitToPos(params: {
   } catch (err) {
     // Network failure reaching pos-square-order-submit itself. The
     // canonical order is already safely persisted (status stays
-    // 'confirmed') — this only means POS submission didn't happen this
+    // 'pending') — this only means POS submission didn't happen this
     // time, which is an explicit, honest outcome, not a fabricated one.
     return {
       attempted: false,
@@ -259,8 +400,21 @@ export async function handler(req: Request): Promise<Response> {
 
   const adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+  const unitPrices = await resolveUnitPrices(shape.value.items, async (ids) => {
+    const { data, error } = await adminClient
+      .from("menu_items")
+      .select("id, data")
+      .eq("cafe_id", shape.value.cafeId)
+      .in("id", ids);
+    if (error) {
+      console.error("create-order: could not fetch menu items for pricing", error);
+      return [];
+    }
+    return (data ?? []) as { id: string; data: MenuItemPricingData }[];
+  });
+
   const { data: rpcRows, error: rpcError } = await adminClient
-    .rpc("create_canonical_order", { payload: buildRpcPayload(shape.value) });
+    .rpc("create_canonical_order", { payload: buildRpcPayload(shape.value, unitPrices) });
 
   if (rpcError) {
     const { status, message } = classifyRpcError(rpcError);
@@ -268,17 +422,17 @@ export async function handler(req: Request): Promise<Response> {
     return jsonResponse({ error: message }, status);
   }
 
-  const orderRow = Array.isArray(rpcRows) ? rpcRows[0] : rpcRows;
-  if (!orderRow?.order_id) {
+  const orderRow = extractOrderRow(rpcRows);
+  if (!orderRow) {
     console.error("create-order: create_canonical_order returned no order", rpcRows);
     return jsonResponse({ error: "Could not create the order. Please try again." }, 500);
   }
 
-  const orderId = orderRow.order_id as string;
-  const orderStatus = orderRow.status as string;
-  const total = Number(orderRow.total);
+  const orderId = orderRow.id;
+  const orderStatus = orderRow.status;
+  const total = orderRow.total;
 
-  // Automatic POS submission — every newly-created order is 'confirmed',
+  // Automatic POS submission — every newly-created order is 'pending',
   // which is one of pos-square-order-submit's own ELIGIBLE_STATUSES, so
   // this always attempts submission. If the café has no active Square
   // connection, that function's own existing logic decides the outcome

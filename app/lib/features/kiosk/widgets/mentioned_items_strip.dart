@@ -1,3 +1,5 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -6,244 +8,223 @@ import '../../../models/menu.dart';
 final _currency = NumberFormat.simpleCurrency(name: 'GBP');
 
 /// Small "what the AI is talking about" cards shown below the conversation
-/// panel — picture, name, price, and a popular badge — so an answer like
-/// "we have a chocolate muffin" is visual, not just spoken. Tapping a card
-/// opens [_ItemDetailSheet] for the full description/options/add-to-order.
-/// Renders nothing when [itemIds] is empty (a reply that wasn't about any
-/// specific item), so this never leaves an empty gap in the layout.
+/// panel — picture, name, short description and price — so an answer like
+/// "we have a chocolate muffin" is visual, not just spoken.
+///
+/// Purely informational: these cards are NOT a second cart. They can't be
+/// tapped and have no add/quantity controls — ordering stays voice-first,
+/// and what the customer has actually ordered lives in the order summary.
+/// Transcript = what the AI is saying; cards = what it's talking about;
+/// order summary = what the customer has ordered.
+///
+/// Renders nothing when [itemIds] is empty or none of them are on [menu] (a
+/// reply that wasn't about any specific item, or an id that isn't loaded), so
+/// this never leaves an empty gap in the layout. Duplicate ids collapse into
+/// one card, and at most [maxCards] are shown.
 class MentionedItemsStrip extends StatelessWidget {
+  static const maxCards = 4;
+
   final List<String> itemIds;
   final CafeMenu menu;
-  final void Function(MenuItem item) onAdd;
 
   const MentionedItemsStrip({
     super.key,
     required this.itemIds,
     required this.menu,
-    required this.onAdd,
   });
 
   @override
   Widget build(BuildContext context) {
-    final items = itemIds.map(menu.findById).whereType<MenuItem>().toList();
-    if (items.isEmpty) return const SizedBox.shrink();
+    final items = _resolve();
+    final content = items.isEmpty
+        ? const SizedBox(width: double.infinity)
+        : _CardRow(items: items);
 
-    return SizedBox(
-      height: 168,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        itemCount: items.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
-        itemBuilder: (context, i) => _ItemCard(
-          item: items[i],
-          onTap: () => _openDetail(context, items[i]),
-        ),
-      ),
+    // With "reduce motion" on, skip AnimatedSize altogether rather than
+    // giving it a zero duration: a zero-length AnimatedSize finishes inside
+    // its own layout pass, which Flutter asserts against.
+    if (MediaQuery.disableAnimationsOf(context)) return content;
+
+    // AnimatedSize eases the strip's height in/out as cards appear and
+    // clear, instead of the content below it snapping.
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      alignment: Alignment.topCenter,
+      child: content,
     );
   }
 
-  void _openDetail(BuildContext context, MenuItem item) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => _ItemDetailSheet(
-        item: item,
-        onAdd: () {
-          onAdd(item);
-          Navigator.of(context).pop();
-        },
+  /// Ids -> menu items, in the order the AI mentioned them. An id that isn't
+  /// on the loaded menu is skipped silently; the menu stays the source of
+  /// truth for every field shown.
+  List<MenuItem> _resolve() {
+    final seen = <String>{};
+    final items = <MenuItem>[];
+    for (final id in itemIds) {
+      if (!seen.add(id)) continue;
+      final item = menu.findById(id);
+      if (item == null) continue;
+      items.add(item);
+      if (items.length == maxCards) break;
+    }
+    return items;
+  }
+}
+
+Duration _animationDuration(BuildContext context, Duration normal) =>
+    MediaQuery.disableAnimationsOf(context) ? Duration.zero : normal;
+
+/// One card fills the row; several sit side by side and scroll sideways, so
+/// a multi-item answer stays one card tall instead of a tall stack.
+class _CardRow extends StatelessWidget {
+  final List<MenuItem> items;
+  const _CardRow({required this.items});
+
+  static const _baseHeight = 96.0;
+
+  @override
+  Widget build(BuildContext context) {
+    // Cards are a fixed height so a row of them lines up; grow it with the
+    // user's text size so larger text doesn't overflow.
+    final textScale = MediaQuery.textScalerOf(context).scale(1).clamp(1.0, 1.6);
+    final height = _baseHeight * textScale;
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final available = constraints.maxWidth.isFinite ? constraints.maxWidth : 340.0;
+        final cardWidth = items.length == 1
+            ? available.clamp(0.0, 420.0)
+            : (available * 0.86).clamp(0.0, 320.0);
+
+        // Flutter's default scroll behaviour only drags with touch, so on
+        // web with a mouse a second card would be unreachable. Allow mouse
+        // drag on this row only (dragging is scrolling, not tapping).
+        return ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(
+            dragDevices: {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.mouse,
+              PointerDeviceKind.stylus,
+              PointerDeviceKind.trackpad,
+            },
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < items.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 10),
+                  // Keyed by product id: a product that stays mentioned keeps
+                  // its card as-is (no replay), only a newly mentioned one
+                  // animates in.
+                  _EntranceAnimation(
+                    key: ValueKey(items[i].id),
+                    child: SizedBox(
+                      width: cardWidth,
+                      height: height,
+                      child: _ProductCard(item: items[i]),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Short fade + slight upward slide, played once when the card first
+/// appears — quick and quiet so it never competes with the conversation.
+class _EntranceAnimation extends StatelessWidget {
+  final Widget child;
+  const _EntranceAnimation({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: _animationDuration(context, const Duration(milliseconds: 240)),
+      curve: Curves.easeOutCubic,
+      child: child,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(offset: Offset(0, (1 - t) * 10), child: child),
       ),
     );
   }
 }
 
-class _ItemCard extends StatelessWidget {
+/// Deliberately has no InkWell/GestureDetector/buttons/chevron: it is a
+/// read-only view of a [MenuItem].
+class _ProductCard extends StatelessWidget {
   final MenuItem item;
-  final VoidCallback onTap;
-
-  const _ItemCard({required this.item, required this.onTap});
+  const _ProductCard({required this.item});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return SizedBox(
-      width: 128,
-      child: Material(
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
         color: theme.colorScheme.surfaceContainerLow,
         borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(8),
+      ),
+      child: Row(
+        children: [
+          AspectRatio(
+            aspectRatio: 1,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: _ItemImage(imageUrl: item.imageUrl, iconSize: 28),
+                  ),
+                ),
+                if (item.popular)
+                  const Positioned(top: 4, left: 4, child: _PopularBadge()),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Stack(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(10),
-                      child: SizedBox(
-                        width: double.infinity,
-                        height: 84,
-                        child: _ItemImage(imageUrl: item.imageUrl, iconSize: 28),
-                      ),
-                    ),
-                    if (item.popular)
-                      Positioned(
-                        top: 4,
-                        left: 4,
-                        child: _PopularBadge(),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
                 Text(
                   item.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
+                if (item.description.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    item.description,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
+                ],
+                const SizedBox(height: 4),
                 Text(
                   _currency.format(item.basePrice),
-                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
           ),
-        ),
+        ],
       ),
-    );
-  }
-}
-
-class _ItemDetailSheet extends StatelessWidget {
-  final MenuItem item;
-  final VoidCallback onAdd;
-
-  const _ItemDetailSheet({required this.item, required this.onAdd});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.outlineVariant,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-            ),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: SizedBox(
-                width: double.infinity,
-                height: 160,
-                child: _ItemImage(imageUrl: item.imageUrl, iconSize: 48),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(item.name, style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-                ),
-                if (item.popular) const Padding(padding: EdgeInsets.only(left: 8), child: _PopularBadge()),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              _currency.format(item.basePrice),
-              style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.primary),
-            ),
-            if (item.description.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              Text(item.description, style: theme.textTheme.bodyMedium),
-            ],
-            if (item.sizes.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              _OptionsRow(label: 'Sizes', options: item.sizes.map((s) => s.name).toList()),
-            ],
-            if (item.milkOptions.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              _OptionsRow(label: 'Milk', options: item.milkOptions.map((m) => m.name).toList()),
-            ],
-            if (item.modifiers.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              _OptionsRow(label: 'Add-ons', options: item.modifiers.map((m) => m.name).toList()),
-            ],
-            if (item.allergens.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                'Contains: ${item.allergens.join(', ')}',
-                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
-              ),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: item.available ? onAdd : null,
-                icon: const Icon(Icons.add),
-                label: Text(item.available ? 'Add to order' : 'Currently unavailable'),
-                style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'You can still ask for a specific size, milk, or add-on by voice or typing.',
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _OptionsRow extends StatelessWidget {
-  final String label;
-  final List<String> options;
-  const _OptionsRow({required this.label, required this.options});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-        const SizedBox(height: 4),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (final option in options)
-              Chip(
-                label: Text(option, style: const TextStyle(fontSize: 12)),
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-          ],
-        ),
-      ],
     );
   }
 }

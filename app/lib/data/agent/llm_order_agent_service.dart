@@ -42,9 +42,17 @@ class LlmOrderAgentService implements OrderAgentService {
       reply: data['reply'] as String,
       order: Order.fromJson(data['order'] as Map<String, dynamic>),
       needsClarification: data['needsClarification'] as bool? ?? false,
-      mentionedItemIds: (data['mentionedItemIds'] as List<dynamic>? ?? [])
-          .map((e) => e as String)
-          .toList(),
+      mentionedItemIds: parseMentionedItemIds(data['mentionedItemIds']),
     );
   }
+}
+
+/// Reads the reply's optional `mentionedItemIds` without ever failing the
+/// turn: it's a display-only hint, so a missing, non-list or partly
+/// malformed value just means fewer (or no) cards — it must never cost the
+/// customer their reply or their order update. Non-string entries are
+/// dropped and repeats collapse, keeping the order the AI gave them in.
+List<String> parseMentionedItemIds(Object? raw) {
+  if (raw is! List) return const [];
+  return raw.whereType<String>().where((id) => id.isNotEmpty).toSet().toList();
 }

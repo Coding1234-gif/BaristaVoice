@@ -58,9 +58,13 @@ class KioskState {
   final String? errorMessage;
 
   /// IDs of menu items the latest assistant reply is actually about — drives
-  /// the item cards shown below the conversation panel (see
+  /// the informational item cards shown below the conversation panel (see
   /// MentionedItemsStrip). Empty when the reply wasn't about any specific
-  /// item(s), e.g. a clarifying question.
+  /// item(s), e.g. a clarifying question. Display-only: this never feeds
+  /// [order], which only changes through the agent's own order result.
+  /// Replaced by every agent reply, cleared when a deterministic message
+  /// takes over the transcript (see [KioskController._say]) and by
+  /// [KioskController.resetOrder].
   final List<String> mentionedItemIds;
 
   /// Whether the customer has tapped "Start Order" yet. That first tap is
@@ -202,7 +206,10 @@ class KioskController extends StateNotifier<KioskState> {
   /// started on that right away" was heard but never shown). Every such
   /// message must go through this instead of calling `_tts.speak` directly.
   void _say(String text) {
-    state = state.copyWith(assistantReply: text);
+    // The item cards belong to the reply they were returned with; once a
+    // different message (order review, payment prompt, ...) replaces it in
+    // the transcript they would be describing a line that's no longer there.
+    state = state.copyWith(assistantReply: text, mentionedItemIds: const []);
     unawaited(_tts.speak(text));
   }
 
@@ -369,19 +376,6 @@ class KioskController extends StateNotifier<KioskState> {
     final trimmed = text.trim();
     if (trimmed.isEmpty || state.listeningStatus != ListeningStatus.idle) return;
     await _submitTranscript(trimmed);
-  }
-
-  /// Tap-to-add from a mentioned-item card's detail view — adds one of
-  /// [item] at its base price/options, bypassing the LLM entirely. The
-  /// customer can still refine it by voice/text afterward ("make it large",
-  /// "add oat milk") exactly like any other order line.
-  void addItemDirectly(MenuItem item) {
-    if (state.isSubmittingOrder || state.paymentPhase != PaymentPhase.none) return;
-    final newItem = OrderItem(menuItemId: item.id, name: item.name);
-    state = state.copyWith(
-      order: state.order.copyWith(items: [...state.order.items, newItem]),
-      isReviewingOrder: false,
-    );
   }
 
   List<ConversationTurn> _recentHistory() {

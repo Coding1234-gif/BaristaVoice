@@ -471,7 +471,6 @@ class _KioskBody extends ConsumerWidget {
                 MentionedItemsStrip(
                   itemIds: kioskState.mentionedItemIds,
                   menu: menu,
-                  onAdd: controller.addItemDirectly,
                 ),
               ],
             ),

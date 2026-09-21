@@ -8,15 +8,16 @@
 # create-order/pos-square-order-submit do. So this signs in as the demo
 # admin first to get a real access token, then calls both functions with it.
 #
-# Fill in the four variables below, then run:
-#   bash supabase/demo_cafe_square_catalog_sync.sh
+# Export the four variables below, then run:
+#   SUPABASE_URL=... ANON_KEY=... EMAIL=... PASSWORD=... bash supabase/demo_cafe_square_catalog_sync.sh
 # ============================================================
 set -euo pipefail
 
-SUPABASE_URL="https://hanvesvgayioajqqfwcu.supabase.co"
-ANON_KEY="sb_publishable_0uI7MMK4jODZsZr1f9KfDg_Mt7cUcf2"
-EMAIL="baristavoice.demo@gmail.com"
-PASSWORD="!Bean-Bloom-demo123"
+# Credentials come from the environment — nothing secret lives in this file.
+: "${SUPABASE_URL:?Set SUPABASE_URL, e.g. https://<project-ref>.supabase.co}"
+: "${ANON_KEY:?Set ANON_KEY to your projects publishable or anon key}"
+: "${EMAIL:?Set EMAIL to the demo admin email}"
+: "${PASSWORD:?Set PASSWORD to the demo admin password}"
 
 # Bean & Bloom's Square sandbox pos_connections.id (from earlier setup).
 CONNECTION_ID="59bc9095-2cb0-4380-bec8-afe14cba9da1"

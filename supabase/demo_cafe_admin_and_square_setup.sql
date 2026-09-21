@@ -81,7 +81,7 @@ delete from public.cafes where id = '0e601b13-cb01-47eb-8fb7-cfe09dc27e80';
 -- column). Note the returned uuid:
 
 select vault.create_secret(
-    'EAAAl8OVtNZDJGot7PxkrFLbxdpJMCJDAuZJqvsfgSWTBaWncDg6J4Cs3rX8XSr-',
+    '<your Square sandbox access token>',
     'square-sandbox-bean-and-bloom',
     'Square sandbox access token for the Bean & Bloom demo cafe'
 ) as access_token_secret_id;

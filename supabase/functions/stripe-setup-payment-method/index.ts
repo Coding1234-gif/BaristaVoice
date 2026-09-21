@@ -80,6 +80,31 @@ export async function stripeRequest(
   return json;
 }
 
+/** Form params for the Checkout Session that saves a café's card. */
+export function buildSetupSessionParams(args: {
+  stripeCustomerId: string;
+  successUrl: string;
+  cancelUrl: string;
+  cafeId: string;
+}): Record<string, string | boolean> {
+  return {
+    mode: "setup",
+    customer: args.stripeCustomerId,
+    "payment_method_types[0]": "card",
+    success_url: args.successUrl,
+    cancel_url: args.cancelUrl,
+    "metadata[cafe_id]": args.cafeId,
+    // Confirmed 2026-09-19: this Stripe account has Managed Payments (Stripe
+    // as merchant of record) on by default, and Stripe rejects `mode: setup`
+    // with it — "Managed Payments ... only supports mode: subscription or
+    // mode: payment". This flow only saves a card so BaristaVoice can invoice
+    // the café's monthly usage off-session; it is not a Managed Payments
+    // sale, so opt out for this request. Must stay explicit: without it,
+    // billing setup fails for any account that has the default enabled.
+    "managed_payments[enabled]": false,
+  };
+}
+
 export function authorizeCafeAccess(
   profile: { role: string; cafeId: string | null },
   requestedCafeId: string,
@@ -168,14 +193,11 @@ async function handler(req: Request): Promise<Response> {
       }
     }
 
-    const session = await stripeRequest("/checkout/sessions", "POST", {
-      mode: "setup",
-      customer: stripeCustomerId,
-      "payment_method_types[0]": "card",
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      "metadata[cafe_id]": cafeId,
-    });
+    const session = await stripeRequest(
+      "/checkout/sessions",
+      "POST",
+      buildSetupSessionParams({ stripeCustomerId, successUrl, cancelUrl, cafeId }),
+    );
 
     return jsonResponse({ url: session.url as string });
   } catch (err) {

@@ -209,3 +209,7 @@ flutter test
 
 Offline unit tests live in `test/unit/`. They cover small pieces of app logic
 without requiring a device, a running backend, or a Supabase connection.
+
+## License
+
+Released under the [MIT License](LICENSE).

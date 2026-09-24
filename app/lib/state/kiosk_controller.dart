@@ -329,9 +329,15 @@ class KioskController extends StateNotifier<KioskState> {
     // time it arrives. Stopping first left a window where a good transcript
     // could be clobbered by that trailing error right after being captured.
     final customerTurn = ConversationTurn(role: SpeakerRole.customer, text: transcript);
+    // What the conversation looked like before this attempt — restored if
+    // the attempt fails, so a failed try doesn't leave a dangling customer
+    // line (or an apology) in the history the NEXT try is sent with. Left
+    // in, every retry made the request bigger and showed the AI a run of
+    // unanswered, repeated lines.
+    final historyBefore = state.history;
     state = state.copyWith(
       listeningStatus: ListeningStatus.thinking,
-      history: [...state.history, customerTurn],
+      history: [...historyBefore, customerTurn],
       clearError: true,
     );
 
@@ -343,8 +349,24 @@ class KioskController extends StateNotifier<KioskState> {
         transcript: transcript,
         currentOrder: state.order,
         menu: _menu,
-        history: _recentHistory(),
+        // PRIOR turns only: the utterance itself travels as `transcript`, and
+        // the server appends it as the final message — sending it in the
+        // history too made the model see every utterance twice.
+        history: _recentHistory(historyBefore),
       );
+
+      if (result.retryable) {
+        // The server had no real answer (AI provider throttling/failure). Say
+        // so, but keep the customer's own order and a clean history.
+        state = state.copyWith(
+          listeningStatus: ListeningStatus.idle,
+          assistantReply: result.reply,
+          history: historyBefore,
+          mentionedItemIds: const [],
+        );
+        unawaited(_tts.speak(result.reply));
+        return;
+      }
 
       final assistantTurn = ConversationTurn(role: SpeakerRole.assistant, text: result.reply);
       state = state.copyWith(
@@ -364,6 +386,7 @@ class KioskController extends StateNotifier<KioskState> {
         listeningStatus: ListeningStatus.idle,
         errorMessage:
             "Sorry, something went wrong understanding that. Could you try again?",
+        history: historyBefore,
         mentionedItemIds: const [],
       );
     }
@@ -378,8 +401,7 @@ class KioskController extends StateNotifier<KioskState> {
     await _submitTranscript(trimmed);
   }
 
-  List<ConversationTurn> _recentHistory() {
-    final h = state.history;
+  List<ConversationTurn> _recentHistory(List<ConversationTurn> h) {
     if (h.length <= _maxHistoryTurns) return h;
     return h.sublist(h.length - _maxHistoryTurns);
   }

@@ -17,11 +17,18 @@ class AgentTurnResult {
   /// item cards shown below the conversation panel — see MentionedItemsStrip.
   final List<String> mentionedItemIds;
 
+  /// True when the server produced no real answer for this turn (the AI
+  /// provider was throttling or failed) and [reply] is just an apology. The
+  /// exchange is then not a conversation turn: it must not enter the history
+  /// sent with the next request, and [order] must not be adopted.
+  final bool retryable;
+
   const AgentTurnResult({
     required this.reply,
     required this.order,
     this.needsClarification = false,
     this.mentionedItemIds = const [],
+    this.retryable = false,
   });
 }
 

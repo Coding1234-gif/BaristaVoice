@@ -29,7 +29,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
  * show a latency breakdown for real traffic. Also echoed back in the
  * response body as `_timing`, but only when the caller sends
  * `x-debug-timing: 1` — normal client requests never see this field. */
-class RequestTimer {
+export class RequestTimer {
   private readonly id: string;
   private readonly t0: number;
   private marks: { label: string; atMs: number }[] = [];
@@ -120,10 +120,146 @@ interface LlmToolResult {
 const FALLBACK_REPLY =
   "Sorry, I didn't quite catch that. Could you say that again?";
 
+// Shown when the LLM provider itself is throttling us (HTTP 429) — a
+// different problem from "didn't understand", and repeating the same words
+// won't help, so the customer shouldn't be told to.
+const RATE_LIMITED_REPLY =
+  "I'm a little busy right now — give me a few seconds and try that again.";
+
+// ---------------------------------------------------------------------------
+// What the model is actually shown.
+//
+// The model doesn't need the raw menu rows: product photo URLs, `available`
+// flags, empty option lists and 36-character UUIDs (repeated in the menu,
+// twice in the tool schema, and in the current order) are pure token cost —
+// and tokens are what the provider's per-minute limit counts. On Groq's
+// free tier (8,000 tokens/minute) an untrimmed request was ~7k tokens, so
+// only about one request per minute succeeded and everything else came
+// back as a generic "didn't catch that". So the prompt gets a compact menu
+// with short ids (m1, m2, ...), and every id the model returns is mapped
+// straight back to the real menu id BEFORE any validation — nothing
+// downstream ever sees a short id.
+// ---------------------------------------------------------------------------
+
+export interface PromptMenu {
+  cafeName: string;
+  items: Record<string, unknown>[];
+}
+
+export interface PromptMenuBundle {
+  promptMenu: PromptMenu;
+  /** The short ids, in menu order — the enum the tool schema allows. */
+  shortIds: string[];
+  idByShort: Map<string, string>;
+  shortById: Map<string, string>;
+}
+
+export function buildPromptMenu(menu: Menu): PromptMenuBundle {
+  const idByShort = new Map<string, string>();
+  const shortById = new Map<string, string>();
+
+  const items = menu.items.map((item, i) => {
+    const short = `m${i + 1}`;
+    idByShort.set(short, item.id);
+    shortById.set(item.id, short);
+
+    const out: Record<string, unknown> = {
+      id: short,
+      name: item.name,
+      category: item.category,
+      basePrice: item.basePrice,
+    };
+    if (item.popular) out.popular = true;
+    if (item.description) out.description = item.description;
+    // Option NAMES only: the model never states or computes prices (the
+    // app prices everything from the real menu), so per-option price
+    // deltas would just be tokens. Names are what validateAndEnrich
+    // matches against.
+    const names = (opts?: PricedOption[]) => (opts ?? []).map((o) => o.name);
+    if (item.sizes?.length) out.sizes = names(item.sizes);
+    if (item.milkOptions?.length) out.milkOptions = names(item.milkOptions);
+    if (item.temperatureOptions?.length) out.temperatureOptions = item.temperatureOptions;
+    if (item.decafAvailable) out.decafAvailable = true;
+    if (item.modifiers?.length) out.modifiers = names(item.modifiers);
+    if (item.allergens?.length) out.allergens = item.allergens;
+    if (item.dietaryTags?.length) out.dietaryTags = item.dietaryTags;
+    return out;
+  });
+
+  return {
+    promptMenu: { cafeName: menu.cafeName, items },
+    shortIds: [...idByShort.keys()],
+    idByShort,
+    shortById,
+  };
+}
+
+/** The customer's current order, with menu ids in the same short form the
+ * model sees in the menu. Ids it doesn't recognise pass through unchanged. */
+export function shortenOrderIds(
+  order: RequestBody["currentOrder"],
+  shortById: Map<string, string>,
+): RequestBody["currentOrder"] {
+  return {
+    ...order,
+    items: (order?.items ?? []).map((item) => ({
+      ...item,
+      menuItemId: shortById.get(item.menuItemId) ?? item.menuItemId,
+    })),
+  };
+}
+
+/** Maps every menu id in the model's reply back to the real one. A short id
+ * that isn't in the map (hallucinated) passes through untouched and is then
+ * dropped by validateAndEnrich / validateMentionedItemIds like any other
+ * unknown id. */
+export function restoreResultIds(
+  result: LlmToolResult,
+  idByShort: Map<string, string>,
+): LlmToolResult {
+  return {
+    ...result,
+    order: {
+      ...result.order,
+      items: (result.order?.items ?? []).map((item) => ({
+        ...item,
+        menuItemId: idByShort.get(item.menuItemId) ?? item.menuItemId,
+      })),
+    },
+    mentionedItemIds: Array.isArray(result.mentionedItemIds)
+      ? result.mentionedItemIds.map((id) => idByShort.get(id) ?? id)
+      : undefined,
+  };
+}
+
+/** Milliseconds to wait per a `Retry-After` header (seconds), or null when
+ * absent/unusable. */
+export function retryAfterMs(header: string | null): number | null {
+  if (header === null) return null;
+  const seconds = Number(header);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.round(seconds * 1000);
+}
+
+/** Only a short, provider-suggested wait is worth blocking a customer on. */
+const MAX_RATE_LIMIT_RETRY_WAIT_MS = 2500;
+
+interface LlmDebug {
+  info?: unknown;
+  /** The provider throttled the request (HTTP 429). */
+  rateLimited?: boolean;
+}
+
+interface PromptInputs {
+  menu: PromptMenu;
+  shortIds: string[];
+  order: RequestBody["currentOrder"];
+}
+
 const TOOL_NAME = "update_order";
 const TOOL_DESCRIPTION = "Reply to the customer and set the full, updated order state.";
 
-function buildSystemPrompt(menu: Menu, currentOrder: RequestBody["currentOrder"]): string {
+export function buildSystemPrompt(menu: PromptMenu, currentOrder: RequestBody["currentOrder"]): string {
   return `You are a friendly, knowledgeable barista working the order counter at ${menu.cafeName}.
 Customers speak to you naturally. Your job each turn is to:
 1. Understand what they want (a question, an item to add, a change, a removal, or a confirmation).
@@ -162,8 +298,7 @@ ${JSON.stringify(currentOrder)}`;
 }
 
 /** Gemini's function-declaration schema: uppercase types, `nullable: true`. */
-function buildGeminiFunctionDeclaration(menu: Menu) {
-  const itemIds = menu.items.map((i) => i.id);
+function buildGeminiFunctionDeclaration(itemIds: string[]) {
   return {
     name: TOOL_NAME,
     description: TOOL_DESCRIPTION,
@@ -207,8 +342,7 @@ function buildGeminiFunctionDeclaration(menu: Menu) {
 }
 
 /** OpenAI-compatible (Groq) tool schema: lowercase types, `["string","null"]` unions. */
-function buildOpenAiTool(menu: Menu) {
-  const itemIds = menu.items.map((i) => i.id);
+export function buildOpenAiTool(itemIds: string[]) {
   return {
     type: "function",
     function: {
@@ -259,12 +393,11 @@ function buildOpenAiTool(menu: Menu) {
 }
 
 async function callGemini(
-  menu: Menu,
-  currentOrder: RequestBody["currentOrder"],
+  prompt: PromptInputs,
   transcript: string,
   history: RequestBody["history"],
   timer: RequestTimer,
-  debugRef?: { info?: unknown }
+  debugRef?: LlmDebug
 ): Promise<LlmToolResult | null> {
   const contents = [
     ...(history ?? []).map((h) => ({
@@ -281,9 +414,9 @@ async function callGemini(
       method: "POST",
       headers: { "content-type": "application/json", "x-goog-api-key": LLM_API_KEY! },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: buildSystemPrompt(menu, currentOrder) }] },
+        system_instruction: { parts: [{ text: buildSystemPrompt(prompt.menu, prompt.order) }] },
         contents,
-        tools: [{ functionDeclarations: [buildGeminiFunctionDeclaration(menu)] }],
+        tools: [{ functionDeclarations: [buildGeminiFunctionDeclaration(prompt.shortIds)] }],
         tool_config: {
           function_calling_config: { mode: "ANY", allowed_function_names: [TOOL_NAME] },
         },
@@ -303,7 +436,10 @@ async function callGemini(
   if (!res.ok) {
     const text = await res.text();
     console.error("Gemini API error:", res.status, text);
-    if (debugRef) debugRef.info = { status: res.status, body: text.slice(0, 2000) };
+    if (debugRef) {
+      debugRef.info = { status: res.status, body: text.slice(0, 2000) };
+      debugRef.rateLimited = res.status === 429;
+    }
     return null;
   }
 
@@ -319,16 +455,16 @@ async function callGemini(
   return functionCallPart.functionCall.args as LlmToolResult;
 }
 
-async function callGroq(
-  menu: Menu,
-  currentOrder: RequestBody["currentOrder"],
+export async function callGroq(
+  prompt: PromptInputs,
   transcript: string,
   history: RequestBody["history"],
   timer: RequestTimer,
-  debugRef?: { info?: unknown }
+  debugRef?: LlmDebug,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<LlmToolResult | null> {
   const messages = [
-    { role: "system", content: buildSystemPrompt(menu, currentOrder) },
+    { role: "system", content: buildSystemPrompt(prompt.menu, prompt.order) },
     ...(history ?? []).map((h) => ({
       role: h.role === "customer" ? "user" : "assistant",
       content: h.text,
@@ -336,26 +472,58 @@ async function callGroq(
     { role: "user", content: transcript },
   ];
 
+  const baseBody = {
+    model: LLM_MODEL,
+    messages,
+    tools: [buildOpenAiTool(prompt.shortIds)],
+    tool_choice: { type: "function", function: { name: TOOL_NAME } },
+  };
+
+  // Same reasoning as Gemini's thinkingBudget: 0 above — picking a tool call
+  // from a short menu needs no extended reasoning, and gpt-oss's reasoning
+  // tokens count against the per-minute limit and add latency. The output
+  // cap keeps a runaway generation from doing the same. These are OPTIONAL
+  // extras: if the provider rejects them (400), the request is retried
+  // without them rather than taking ordering down.
+  const tunedBody = { ...baseBody, reasoning_effort: "low", max_completion_tokens: 1024 };
+
+  const post = (body: unknown) =>
+    fetchImpl("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${LLM_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+    });
+
   timer.mark("llm_request_start");
-  const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${LLM_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: LLM_MODEL,
-      messages,
-      tools: [buildOpenAiTool(menu)],
-      tool_choice: { type: "function", function: { name: TOOL_NAME } },
-    }),
-  });
+  let body: unknown = tunedBody;
+  let res = await post(body);
+
+  if (res.status === 400) {
+    console.error("Groq rejected the request, retrying without optional params:", (await res.text()).slice(0, 500));
+    body = baseBody;
+    res = await post(body);
+  }
+
+  if (res.status === 429) {
+    const waitMs = retryAfterMs(res.headers.get("retry-after"));
+    if (waitMs !== null && waitMs <= MAX_RATE_LIMIT_RETRY_WAIT_MS) {
+      await res.text();
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      res = await post(body);
+    }
+  }
   timer.mark("llm_response_headers_received");
 
   if (!res.ok) {
     const text = await res.text();
     console.error("Groq API error:", res.status, text);
-    if (debugRef) debugRef.info = { status: res.status, body: text.slice(0, 2000) };
+    if (debugRef) {
+      debugRef.info = { status: res.status, body: text.slice(0, 2000) };
+      debugRef.rateLimited = res.status === 429;
+    }
     return null;
   }
 
@@ -369,7 +537,7 @@ async function callGroq(
 
 /** Strips any option the LLM might have hallucinated so the order can never
  * contain something outside what the menu actually allows. */
-function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
+export function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
   const result: OrderItemIn[] = [];
   for (const raw of items) {
     const menuItem = menu.items.find((m) => m.id === raw.menuItemId);
@@ -415,7 +583,7 @@ function validateAndEnrich(items: OrderItemIn[], menu: Menu): OrderItemIn[] {
 /** Drops any id that isn't a real, current menu item (hallucinated or
  * stale) and caps the list — same "never trust the LLM's ids blindly"
  * posture as validateAndEnrich above. */
-function validateMentionedItemIds(ids: string[] | undefined, menu: Menu): string[] {
+export function validateMentionedItemIds(ids: string[] | undefined, menu: Menu): string[] {
   if (!Array.isArray(ids)) return [];
   const validIds = new Set(menu.items.map((i) => i.id));
   const seen = new Set<string>();
@@ -457,7 +625,7 @@ async function fetchCafeMenu(cafeId: string, timer: RequestTimer): Promise<Menu 
   return { cafeName: cafe.name as string, items };
 }
 
-Deno.serve(async (req) => {
+export async function handler(req: Request): Promise<Response> {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
@@ -478,9 +646,29 @@ Deno.serve(async (req) => {
   const timer = new RequestTimer(requestId);
   timer.mark("request_received");
 
+  // Declared outside the try so EVERY failure path can hand the customer's
+  // own cart back untouched — a failed turn must never blank their order.
+  let cartForFailure: RequestBody["currentOrder"] = { items: [] };
+
+  // `retryable` tells the app this turn produced no real answer (the
+  // provider was throttling or failed), so it can leave the failed exchange
+  // out of the conversation history instead of feeding it to the next turn.
+  const failureResponse = (reply: string, extra: Record<string, unknown> = {}) =>
+    new Response(
+      JSON.stringify({
+        reply,
+        order: cartForFailure,
+        needsClarification: true,
+        retryable: true,
+        ...extra,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
+
   try {
     const body = (await req.json()) as RequestBody;
     const { cafeId, transcript, currentOrder, history } = body;
+    if (currentOrder && Array.isArray(currentOrder.items)) cartForFailure = currentOrder;
     timer.mark("body_parsed");
 
     if (!cafeId) {
@@ -514,25 +702,28 @@ Deno.serve(async (req) => {
       );
     }
 
-    const debugRef: { info?: unknown } = {};
-    const result =
-      LLM_PROVIDER === "groq"
-        ? await callGroq(menu, currentOrder, transcript, history, timer, debugRef)
-        : await callGemini(menu, currentOrder, transcript, history, timer, debugRef);
+    const bundle = buildPromptMenu(menu);
+    const prompt: PromptInputs = {
+      menu: bundle.promptMenu,
+      shortIds: bundle.shortIds,
+      order: shortenOrderIds(currentOrder, bundle.shortById),
+    };
 
-    if (!result) {
+    const debugRef: LlmDebug = {};
+    const llmResult =
+      LLM_PROVIDER === "groq"
+        ? await callGroq(prompt, transcript, history, timer, debugRef)
+        : await callGemini(prompt, transcript, history, timer, debugRef);
+
+    if (!llmResult) {
       timer.log();
-      return new Response(
-        JSON.stringify({
-          reply: FALLBACK_REPLY,
-          order: currentOrder,
-          needsClarification: true,
-          ...(debugTiming ? { _timing: { requestId, ...timer.summary() }, _debug: debugRef.info } : {}),
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      return failureResponse(
+        debugRef.rateLimited ? RATE_LIMITED_REPLY : FALLBACK_REPLY,
+        debugTiming ? { _timing: { requestId, ...timer.summary() }, _debug: debugRef.info } : {},
       );
     }
 
+    const result = restoreResultIds(llmResult, bundle.idByShort);
     const validatedItems = validateAndEnrich(result.order?.items ?? [], menu);
     const mentionedItemIds = validateMentionedItemIds(result.mentionedItemIds, menu);
     timer.mark("validated");
@@ -551,13 +742,13 @@ Deno.serve(async (req) => {
   } catch (err) {
     console.error("order-agent error:", err);
     timer.log();
-    return new Response(
-      JSON.stringify({
-        reply: FALLBACK_REPLY,
-        order: { items: [] },
-        needsClarification: true,
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return failureResponse(FALLBACK_REPLY);
   }
-});
+}
+
+// Guarded so tests can import this file without starting a server (same
+// pattern as create-order and pos-square-order-submit). Supabase's runtime
+// runs the file as the main module, so deployment is unaffected.
+if (import.meta.main) {
+  Deno.serve(handler);
+}

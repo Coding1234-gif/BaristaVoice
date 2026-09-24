@@ -43,6 +43,7 @@ class LlmOrderAgentService implements OrderAgentService {
       order: Order.fromJson(data['order'] as Map<String, dynamic>),
       needsClarification: data['needsClarification'] as bool? ?? false,
       mentionedItemIds: parseMentionedItemIds(data['mentionedItemIds']),
+      retryable: data['retryable'] == true,
     );
   }
 }

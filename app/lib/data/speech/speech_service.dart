@@ -77,14 +77,32 @@ class SpeechService {
   static const Duration _nativePauseFor = Duration(milliseconds: 1300);
   static const Duration _webPauseFor = Duration(milliseconds: 3500);
 
+  // speech_to_text starts the `pauseFor` countdown the moment listening
+  // begins, not when the customer starts talking — so with the 1.3s native
+  // pause, anyone who took longer than ~1.3s to start speaking (or a
+  // recognizer slow to emit its first partial, e.g. the Android emulator's)
+  // was cut off with "I didn't catch anything" before saying a word
+  // (confirmed 2026-09-24 via `dumpsys audio`: every recognizer session
+  // lasted 1.0-1.3s while Google Assistant on the same emulator worked).
+  // So allow a long silence before the first words, then tighten to the
+  // normal end-of-utterance pause via `changePauseFor` once speech arrives.
+  static const Duration _initialPauseFor = Duration(seconds: 6);
+
   Future<void> startListening({
     required void Function(String text, bool isFinal) onResult,
     Duration listenFor = const Duration(seconds: 12),
     Duration? pauseFor,
   }) async {
-    pauseFor ??= kIsWeb ? _webPauseFor : _nativePauseFor;
+    final speakingPauseFor = pauseFor ?? (kIsWeb ? _webPauseFor : _nativePauseFor);
+    final initialPauseFor =
+        speakingPauseFor > _initialPauseFor ? speakingPauseFor : _initialPauseFor;
+    var heardSpeech = false;
     await _speech.listen(
       onResult: (result) {
+        if (!heardSpeech && result.recognizedWords.trim().isNotEmpty) {
+          heardSpeech = true;
+          if (_speech.isListening) _speech.changePauseFor(speakingPauseFor);
+        }
         onResult(result.recognizedWords, result.finalResult);
       },
       listenOptions: stt.SpeechListenOptions(
@@ -97,7 +115,7 @@ class SpeechService {
         // mis-hearing them mid-sentence.
         listenMode: stt.ListenMode.dictation,
         listenFor: listenFor,
-        pauseFor: pauseFor,
+        pauseFor: initialPauseFor,
       ),
     );
   }

@@ -4,6 +4,35 @@ A conversational AI self-service ordering kiosk for independent coffee shops. Cu
 naturally to place, question, and modify an order; the screen updates live; staff see confirmed
 orders on a simple dashboard.
 
+## Try it
+
+> **Temporary:** the web version and the sideloadable APK below are stop-gaps. BaristaVoice will be
+> published on the **Google Play Store** in the near future, which will become the main way to
+> install it.
+
+### In the browser (no install)
+
+**<https://coding1234-gif.github.io/BaristaVoice/>**
+
+- **Order as a customer:** tap **View demo café** (Bean & Bloom Café) → **Start Order**. Use
+  **Voice** to talk (tap the mic, allow microphone access) or switch to **Type** to type your order.
+  The order builds live at the bottom; tap the speaker icon to hear the barista's reply, then
+  **That's everything — Review & Confirm**.
+- **Run a café:** tap **For Cafés** (top right) to sign in or create a café account — menu
+  management, the kiosk QR code, live orders, analytics, and the subscription paywall live there.
+- A café's QR code links straight to its kiosk at `…/BaristaVoice/cafe/<café id>`.
+
+Use **Chrome** (desktop or Android) for the best experience: voice input relies on the browser's
+speech recognition, which is most reliable in Chrome. Typing works in every browser.
+
+### On Android (APK)
+
+Download `app-release.apk` from the repository's
+[Releases page](https://github.com/Coding1234-gif/BaristaVoice/releases) on your phone, open it,
+and allow **Install unknown apps** for your browser/file manager when Android asks (this is needed
+because the app isn't from the Play Store yet). To build the APK yourself, see
+[Building an Android APK](#building-an-android-apk).
+
 ## Structure
 
 - [`app/`](app/) — Flutter app (customer kiosk, staff dashboard, owner menu admin — one codebase,
@@ -26,7 +55,13 @@ orders on a simple dashboard.
 
 ```bash
 git clone https://github.com/Coding1234-gif/BaristaVoice.git
+cd BaristaVoice
 ```
+
+**Prerequisites:** the [Flutter SDK](https://docs.flutter.dev/get-started/install) (stable
+channel) and, for Android, [Android Studio](https://developer.android.com/studio) (it provides the
+Android SDK and emulators). Run `flutter doctor` to check everything is set up. All `flutter`
+commands below are run from the `app/` directory.
 
 1. `cd app && flutter pub get`
 2. Create a Supabase project, then run [`supabase/schema.sql`](supabase/schema.sql) against it —
@@ -109,8 +144,10 @@ Premium café-admin features (menu management, the QR code, analytics — anythi
 gated behind a subscription sold through **RevenueCat**. This is entirely optional for local
 development: with no RevenueCat keys set, `SubscriptionService.isSupported` is `false` and every
 premium feature stays unlocked (see
-[`subscription_service.dart`](app/lib/data/billing/subscription_service.dart)) — same on web, which
-RevenueCat's Flutter SDK doesn't support at all.
+[`subscription_service.dart`](app/lib/data/billing/subscription_service.dart)). On web, the paywall
+runs only with `REVENUECAT_API_KEY_TEST` set: RevenueCat's Flutter paywall UI is native-only, so
+the web build shows the same published paywall through RevenueCat's JS SDK instead (see
+[`web_paywall_web.dart`](app/lib/data/billing/web_paywall_web.dart)).
 
 **Setup (only needed to actually test/ship the paywall):**
 
@@ -199,7 +236,61 @@ more than one is available, it will let you choose.
 Hot reload is enabled while `flutter run` is active. Save a file and press
 `r` in the terminal to reload, or `R` for a full restart.
 
+## Building an Android APK
+
+An APK is a single installable file you can send to any Android phone — no Play Store needed.
+
+1. **Configure `app/env` first** (see [Getting started](#getting-started) step 5). It's bundled
+   into the APK at build time, so the APK talks to whatever Supabase project/RevenueCat keys are in
+   it when you build. Leave `CAFE_ID` blank for a general-purpose APK (customers pick a café or the
+   demo café), or set it to lock the install to one café's kiosk.
+2. **Bump the version** in [`app/pubspec.yaml`](app/pubspec.yaml) (`version: 1.0.0+1` — the number
+   after `+` is Android's `versionCode`) whenever you hand out a new build. Android refuses to
+   install an update over an existing install with the same or a lower `versionCode`.
+3. **Build it:**
+
+   ```bash
+   cd app && flutter build apk --release
+   ```
+
+   The output is `app/build/app/outputs/flutter-apk/app-release.apk` (~60 MB; it contains all CPU
+   architectures so it runs on any phone). For smaller per-device files, add
+   `--split-per-abi` — modern phones want the `app-arm64-v8a-release.apk`.
+4. **Install it:**
+   - **Over USB:** with the phone connected and USB debugging on (see
+     [Running the app](#running-the-app)), run `flutter install --release`, or
+     `adb install -r build/app/outputs/flutter-apk/app-release.apk`.
+   - **Without a cable:** upload the APK somewhere the phone can download it — e.g. a
+     [GitHub Release](https://github.com/Coding1234-gif/BaristaVoice/releases/new) (drag the APK
+     into "Attach binaries") — open it on the phone and allow **Install unknown apps** when asked.
+
+**Signing.** Release builds are signed with the upload key in `app/android/app/upload-keystore.jks`,
+configured by `app/android/key.properties` — both are gitignored and never committed. If
+`key.properties` is missing (e.g. a fresh clone), the build falls back to the debug key: the APK
+still installs fine for testing, but it can't be uploaded to the Play Store, and a phone that has
+one signature installed must uninstall before installing the other. The **same** keystore and
+passwords must be used for every Play Store release forever, so keep a backup of both outside this
+repo. To create a keystore on a new machine:
+
+```bash
+keytool -genkey -v -keystore app/android/app/upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+then create `app/android/key.properties`:
+
+```properties
+storePassword=<the password you chose>
+keyPassword=<the password you chose>
+keyAlias=upload
+storeFile=upload-keystore.jks
+```
+
+**For the Play Store** (coming soon), build an App Bundle instead of an APK — Play requires the
+`.aab` format: `flutter build appbundle --release` → `app/build/app/outputs/bundle/release/app-release.aab`.
+
 ## Deploying the web build (GitHub Pages)
+
+> This hosted web version is temporary, until the Play Store release.
 
 One deployment serves both the café admin dashboard and the customer kiosk (`/cafe/<id>`, the
 QR code link), free on GitHub Pages at `https://coding1234-gif.github.io/BaristaVoice`.

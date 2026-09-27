@@ -26,9 +26,22 @@ Future<void> main() async {
     );
   }
 
-  // A no-op on web / without RevenueCat keys configured — see
-  // SubscriptionService's header comment.
-  await SubscriptionService().configure();
+  // A no-op without RevenueCat keys configured (on web: without the Test
+  // Store key) — see SubscriptionService's header comment.
+  final subscriptions = SubscriptionService();
+  await subscriptions.configure();
+  // AuthService only links RevenueCat to the admin on sign-in/signup. A
+  // session restored at launch needs it too — especially on web, where
+  // RevenueCat's SDK starts anonymous on every page load, so a subscription
+  // bought before a reload would otherwise look like it disappeared.
+  final restoredUserId = Env.isSupabaseConfigured ? Supabase.instance.client.auth.currentUser?.id : null;
+  if (restoredUserId != null) {
+    try {
+      await subscriptions.logIn(restoredUserId);
+    } catch (e) {
+      debugPrint('[billing] RevenueCat logIn at startup failed: $e');
+    }
+  }
 
   // Whichever café this device last viewed, persisted across restarts —
   // falls back to CAFE_ID (a kiosk pinned to one café via .env) only if

@@ -199,6 +199,24 @@ more than one is available, it will let you choose.
 Hot reload is enabled while `flutter run` is active. Save a file and press
 `r` in the terminal to reload, or `R` for a full restart.
 
+## Deploying the web build (GitHub Pages)
+
+One deployment serves both the café admin dashboard and the customer kiosk (`/cafe/<id>`, the
+QR code link), free on GitHub Pages at `https://coding1234-gif.github.io/BaristaVoice`.
+
+1. Set `PUBLIC_WEB_URL=https://coding1234-gif.github.io/BaristaVoice` in `app/env`, so the QR
+   code/share link in Settings points there on every platform.
+2. Run [`app/scripts/deploy_web.sh`](app/scripts/deploy_web.sh). It builds with
+   `--base-href /BaristaVoice/` (Pages serves the site from that subpath), copies `index.html` to
+   `404.html` so direct `/cafe/<id>` links load the app instead of GitHub's 404 page, and
+   force-pushes the result to the `gh-pages` branch. Re-run it after every change.
+3. Once: repo **Settings → Pages → Build and deployment → Deploy from a branch → `gh-pages` /
+   `(root)`**, and in Supabase → Authentication → URL Configuration set the Site URL (and a
+   Redirect URL) to the address above, so sign-up confirmation emails link back to it.
+
+Note `app/env` is bundled into the web build and publicly readable — it must only ever hold
+client-side keys (Supabase anon key, RevenueCat public/Test Store keys), never secrets.
+
 ## Testing
 
 Run the full test suite with:

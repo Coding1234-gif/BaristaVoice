@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -41,7 +42,8 @@ class _AnalyticsDashboard extends ConsumerWidget {
       appBar: AppBar(
         title: const Text('Analytics'),
         actions: [
-          IconButton(
+          // Customer Center is native-only (no RevenueCat web equivalent).
+          if (!kIsWeb) IconButton(
             tooltip: 'Manage subscription',
             icon: const Icon(Icons.settings_outlined),
             // RevenueCat's own native UI for viewing/cancelling/managing the

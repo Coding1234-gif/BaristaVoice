@@ -21,11 +21,14 @@
 // Until that's configured, [currentOfferingProvider] resolves to null/empty
 // and this screen shows a plain empty state instead of an empty native
 // view — safe to ship before the dashboard side is finished.
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:purchases_ui_flutter/purchases_ui_flutter.dart';
 
 import '../../../core/admin_theme.dart';
+import '../../../data/billing/subscription_service.dart';
+import '../../../data/billing/web_paywall.dart';
 import '../../../state/billing_providers.dart';
 import '../widgets/admin_states.dart';
 
@@ -60,6 +63,12 @@ class PaywallScreen extends ConsumerWidget {
             return _NotConfiguredYet(featureName: featureName, featureDescription: featureDescription);
           }
 
+          // PaywallView is native-only; on web the same published Paywall is
+          // rendered by RevenueCat's web SDK instead — see web_paywall_web.dart.
+          if (kIsWeb) {
+            return _WebPaywall(featureName: featureName, featureDescription: featureDescription);
+          }
+
           // hasPremiumEntitlementProvider is a live stream (see
           // billing_providers.dart) — it picks up a successful
           // purchase/restore on its own, no manual invalidate needed here.
@@ -75,6 +84,79 @@ class PaywallScreen extends ConsumerWidget {
 
   void _showError(BuildContext context, String message) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+/// Opens RevenueCat's full-screen web paywall as soon as the gated screen is
+/// shown (like the native PaywallView filling the screen), and leaves a
+/// "View plans" button behind in case the customer closes it.
+class _WebPaywall extends ConsumerStatefulWidget {
+  final String featureName;
+  final String featureDescription;
+  const _WebPaywall({required this.featureName, required this.featureDescription});
+
+  @override
+  ConsumerState<_WebPaywall> createState() => _WebPaywallState();
+}
+
+class _WebPaywallState extends ConsumerState<_WebPaywall> {
+  bool _presenting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _present());
+  }
+
+  Future<void> _present() async {
+    if (_presenting) return;
+    setState(() => _presenting = true);
+    String result;
+    try {
+      result = await presentWebPaywall(defaultOfferingId);
+    } catch (e) {
+      result = 'ERROR';
+      debugPrint('[paywall] web paywall failed: $e');
+    }
+    if (!mounted) return;
+    setState(() => _presenting = false);
+    if (result == 'PURCHASED' || result == 'NOT_PRESENTED') {
+      // NOT_PRESENTED: already entitled — either way, re-check so
+      // PremiumGate swaps this screen for the real one.
+      ref.read(subscriptionServiceProvider).refreshEntitlements();
+    } else if (result == 'ERROR') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not load subscription plans. Please try again.')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.workspace_premium_outlined, color: adminSeedColor, size: 40),
+              const SizedBox(height: 16),
+              Text(widget.featureName, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
+              const SizedBox(height: 8),
+              Text(widget.featureDescription,
+                  style: const TextStyle(color: Colors.black54), textAlign: TextAlign.center),
+              const SizedBox(height: 20),
+              FilledButton(
+                onPressed: _presenting ? null : _present,
+                child: const Text('View plans'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

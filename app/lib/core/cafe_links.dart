@@ -1,14 +1,20 @@
 import 'package:flutter/foundation.dart' show kIsWeb;
 
+import 'env.dart';
+
 /// Builds the two forms of a café's stable, permanent QR/deep link. The
 /// café's `id` (from `cafes.id`) never changes once created — the QR always
 /// encodes it directly, so regenerating the QR never produces a new café.
 class CafeLinks {
   /// The primary link encoded in the QR: works in any browser immediately,
-  /// no install required. Uses the admin dashboard's own origin (wherever
-  /// it's deployed) since that's also where the customer-facing web build
-  /// lives — see README for the single-deployment setup.
+  /// no install required. Points at the deployed web build (PUBLIC_WEB_URL),
+  /// which serves both the admin dashboard and the customer-facing kiosk —
+  /// see README for the single-deployment setup. Preferred even on web, so
+  /// a QR shown from a local `flutter run` (localhost) still encodes the
+  /// real public address; falls back to the page's own origin on web.
   static String webUrl(String cafeId) {
+    final publicUrl = Env.publicWebUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (publicUrl.isNotEmpty) return '$publicUrl/cafe/$cafeId';
     if (kIsWeb) return '${Uri.base.origin}/cafe/$cafeId';
     return 'https://YOUR-DEPLOYED-DOMAIN/cafe/$cafeId';
   }

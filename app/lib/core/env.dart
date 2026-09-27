@@ -25,6 +25,13 @@ class Env {
   /// see currentCafeIdProvider.
   static String get cafeId => dotenv.env['CAFE_ID'] ?? '';
 
+  /// Where the web build is publicly hosted (e.g.
+  /// `https://coding1234-gif.github.io/BaristaVoice`, GitHub Pages — see
+  /// README), used for the café QR/share link
+  /// (see CafeLinks.webUrl). Optional: without it, the web build falls back
+  /// to its own origin and native builds show a placeholder.
+  static String get publicWebUrl => dotenv.env['PUBLIC_WEB_URL'] ?? '';
+
   static bool get isSupabaseConfigured =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
 

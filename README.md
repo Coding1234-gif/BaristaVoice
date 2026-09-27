@@ -27,7 +27,7 @@ speech recognition, which is most reliable in Chrome. Typing works in every brow
 
 ### On Android (APK)
 
-Download `app-release.apk` from the repository's
+Download `app-debug.apk` from the repository's
 [Releases page](https://github.com/Coding1234-gif/BaristaVoice/releases) on your phone, open it,
 and allow **Install unknown apps** for your browser/file manager when Android asks (this is needed
 because the app isn't from the Play Store yet). To build the APK yourself, see
@@ -247,19 +247,22 @@ An APK is a single installable file you can send to any Android phone — no Pla
 2. **Bump the version** in [`app/pubspec.yaml`](app/pubspec.yaml) (`version: 1.0.0+1` — the number
    after `+` is Android's `versionCode`) whenever you hand out a new build. Android refuses to
    install an update over an existing install with the same or a lower `versionCode`.
-3. **Build it:**
+3. **Build it.** For now, build a **debug** APK:
 
    ```bash
-   cd app && flutter build apk --release
+   cd app && flutter build apk --debug
    ```
 
-   The output is `app/build/app/outputs/flutter-apk/app-release.apk` (~60 MB; it contains all CPU
-   architectures so it runs on any phone). For smaller per-device files, add
-   `--split-per-abi` — modern phones want the `app-arm64-v8a-release.apk`.
+   The output is `app/build/app/outputs/flutter-apk/app-debug.apk`. It's debug rather than release
+   because the paywall currently runs on RevenueCat's **Test Store** key
+   (`REVENUECAT_API_KEY_TEST`), and RevenueCat blocks Test Store keys in release builds. A debug
+   APK is larger and slower to start than a release one, but works the same otherwise. Once real
+   Play Store products replace the Test Store, switch to `flutter build apk --release` (output
+   `app-release.apk`, ~60 MB — the debug APK is ~230 MB).
 4. **Install it:**
    - **Over USB:** with the phone connected and USB debugging on (see
-     [Running the app](#running-the-app)), run `flutter install --release`, or
-     `adb install -r build/app/outputs/flutter-apk/app-release.apk`.
+     [Running the app](#running-the-app)), run
+     `adb install -r build/app/outputs/flutter-apk/app-debug.apk`.
    - **Without a cable:** upload the APK somewhere the phone can download it — e.g. a
      [GitHub Release](https://github.com/Coding1234-gif/BaristaVoice/releases/new) (drag the APK
      into "Attach binaries") — open it on the phone and allow **Install unknown apps** when asked.
@@ -310,7 +313,7 @@ client-side keys (Supabase anon key, RevenueCat public/Test Store keys), never s
 
 ## Testing
 
-Run the full test suite with:
+Run the full test suite (from `app/`) with:
 
 ```bash
 flutter test

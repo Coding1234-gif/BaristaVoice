@@ -10,6 +10,16 @@ orders on a simple dashboard.
 > published on the **Google Play Store** in the near future, which will become the main way to
 > install it.
 
+
+### On Android (APK) (Recommended)
+
+Download `app-debug.apk` from the repository's
+[Releases page](https://github.com/Coding1234-gif/BaristaVoice/releases) on your phone, open it,
+and allow **Install unknown apps** for your browser/file manager when Android asks (this is needed
+because the app isn't from the Play Store yet). To build the APK yourself, see
+[Building an Android APK](#building-an-android-apk).
+
+
 ### In the browser (no install)
 
 **<https://coding1234-gif.github.io/BaristaVoice/>**
@@ -25,13 +35,6 @@ orders on a simple dashboard.
 Use **Chrome** (desktop or Android) for the best experience: voice input relies on the browser's
 speech recognition, which is most reliable in Chrome. Typing works in every browser.
 
-### On Android (APK)
-
-Download `app-debug.apk` from the repository's
-[Releases page](https://github.com/Coding1234-gif/BaristaVoice/releases) on your phone, open it,
-and allow **Install unknown apps** for your browser/file manager when Android asks (this is needed
-because the app isn't from the Play Store yet). To build the APK yourself, see
-[Building an Android APK](#building-an-android-apk).
 
 ## Structure
 
